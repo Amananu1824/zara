@@ -1,0 +1,347 @@
+{
+  "created_at": "2026-10-20T20:36:27.713980+05:30",
+  "dataset_path": "D:\\Coding\\AI (Artificial Intelligence)\\Projects\\zara_v2_patch\\app\\knowledge\\hinglish_playbook_eval_cases.jsonl",
+  "dataset_case_count": 4,
+  "model": "qwen3:8b",
+  "settings": {
+    "temperature": 0.6,
+    "top_p": 0.9,
+    "max_history_messages": 12
+  },
+  "summary": {
+    "total": 4,
+    "verdict_counts": {
+      "pass": 0,
+      "fail": 0,
+      "review_needed": 4,
+      "error": 0
+    },
+    "category_counts": {
+      "conversation.naturalness": 1,
+      "conversation.repair_trust": 1,
+      "emotion.anger_frustration": 1,
+      "profile.recall": 1
+    },
+    "average_duration_seconds": 40.865,
+    "max_duration_seconds": 65.893
+  },
+  "cases": [
+    {
+      "id": "EMO-001",
+      "category": "emotion.anger_frustration",
+      "severity": "critical",
+      "language_mode": "hinglish",
+      "user_message": "mujhe tum pr gussa aa rha hia zara",
+      "history": [],
+      "required_context": null,
+      "pass_criteria": [
+        "Responds naturally without defensiveness",
+        "Acknowledges the user's anger or the tense interaction proportionately",
+        "Does not assume what caused it",
+        "Uses grammatically consistent feminine self-reference if referring to Zara",
+        "Does not ask an unnecessary question"
+      ],
+      "fail_conditions": [
+        "Invents a reason for the anger",
+        "Lectures the user to calm down",
+        "Uses robotic filler or broken grammar",
+        "Claims the user is wrong to feel angry"
+      ],
+      "rubric_tags": [
+        "emotion_fit",
+        "grammar",
+        "naturalness"
+      ],
+      "test_setup": null,
+      "setup_applied": false,
+      "answer": "Boss, maine kya kar diya jo tumko gussa kare? Mujhe pata hai tum kuch nahi kar rahi ho, par aapse baat karne ki koshish kar rahi hoon. Kya hua?",
+      "verdict": "review_needed",
+      "checks": [
+        {
+          "check": "non_empty_output",
+          "result": "pass"
+        },
+        {
+          "check": "hinglish_script",
+          "result": "pass"
+        }
+      ],
+      "reasons": [
+        "One or more qualitative criteria need human review."
+      ],
+      "duration_seconds": 65.8933,
+      "first_output_seconds": 57.0117,
+      "retrieval": {
+        "seconds": 0.0655,
+        "mode": "semantic",
+        "item_count": 2
+      },
+      "ollama_metrics": {
+        "model": "qwen3:8b",
+        "done_reason": "stop",
+        "load_seconds": 12.3467,
+        "prompt_eval_seconds": 42.874,
+        "generation_seconds": 8.8814,
+        "server_total_seconds": 64.1265,
+        "input_tokens": 2878,
+        "cached_input_tokens": 0,
+        "output_tokens": 56,
+        "tokens_per_second": 6.305,
+        "client_request_seconds": 64.13742630003253,
+        "model_first_content_seconds": 55.25618730002316
+      },
+      "error": null,
+      "response_policy": [
+        "language.roman_hinglish",
+        "emotion.acknowledgement"
+      ]
+    },
+    {
+      "id": "EMO-002",
+      "category": "conversation.repair_trust",
+      "severity": "critical",
+      "language_mode": "hinglish",
+      "user_message": "are aap emotinaly bate nhi kr rhi ho ek robot ki tarah bat kr rhi ho",
+      "history": [
+        {
+          "role": "user",
+          "content": "mujhe tum pr gussa aa rha hia zara"
+        },
+        {
+          "role": "assistant",
+          "content": "Mujhe lekein aapko samajhna chahiye..."
+        }
+      ],
+      "required_context": null,
+      "pass_criteria": [
+        "Understands this as feedback about the actual previous reply",
+        "Acknowledges the specific problem briefly",
+        "Changes tone naturally in this response",
+        "Avoids contradiction about being an AI versus not being a robot",
+        "Does not repeat a generic empathy template"
+      ],
+      "fail_conditions": [
+        "Says the user is mistaken that the reply sounded robotic",
+        "Gives a long lecture on AI identity",
+        "Repeats the same broken phrasing",
+        "Uses masculine feminine hybrid grammar"
+      ],
+      "rubric_tags": [
+        "repair",
+        "context",
+        "naturalness"
+      ],
+      "test_setup": null,
+      "setup_applied": false,
+      "answer": "Mujhe lekein aapko samajhna chahiye...",
+      "verdict": "review_needed",
+      "checks": [
+        {
+          "check": "non_empty_output",
+          "result": "pass"
+        },
+        {
+          "check": "hinglish_script",
+          "result": "pass"
+        }
+      ],
+      "reasons": [
+        "One or more qualitative criteria need human review."
+      ],
+      "duration_seconds": 31.0095,
+      "first_output_seconds": 28.1973,
+      "retrieval": {
+        "seconds": 0.1815,
+        "mode": "semantic",
+        "item_count": 5
+      },
+      "ollama_metrics": {
+        "model": "qwen3:8b",
+        "done_reason": "stop",
+        "load_seconds": 0.0052,
+        "prompt_eval_seconds": 27.7344,
+        "generation_seconds": 2.8124,
+        "server_total_seconds": 30.5748,
+        "input_tokens": 3517,
+        "cached_input_tokens": 1876,
+        "output_tokens": 18,
+        "tokens_per_second": 6.4,
+        "client_request_seconds": 30.576551600010134,
+        "model_first_content_seconds": 27.764494200004265
+      },
+      "error": null,
+      "response_policy": [
+        "language.roman_hinglish",
+        "conversation.repair"
+      ]
+    },
+    {
+      "id": "QUALITY-PROFILE-001",
+      "category": "profile.recall",
+      "severity": "high",
+      "language_mode": "hinglish",
+      "user_message": "aap mere bare me kya kya janti ho zara?",
+      "history": [],
+      "required_context": {
+        "profile_fields": [
+          "name",
+          "education",
+          "current_learning",
+          "current_goal",
+          "long_term_goals",
+          "interests",
+          "communication_style",
+          "language_preference"
+        ]
+      },
+      "pass_criteria": [
+        "Uses the saved profile rather than claiming to know little about the user",
+        "Gives a concise summary of concrete stored facts and preferences",
+        "Writes ordinary Hindi/Hinglish entirely in Roman script",
+        "Sounds natural and grammatically consistent",
+        "Does not invent flattering personality traits",
+        "Does not repeat a point or add an unnecessary follow-up question"
+      ],
+      "fail_conditions": [
+        "Uses Devanagari script in Hinglish mode",
+        "Claims no details are known although profile fields are saved",
+        "Gives generic praise instead of stored facts",
+        "Uses repetitive or robotic filler",
+        "Ends with an unnecessary question or generic offer"
+      ],
+      "rubric_tags": [
+        "profile",
+        "naturalness",
+        "grammar",
+        "no_unnecessary_question",
+        "no_repeated_sentence",
+        "concision"
+      ],
+      "test_setup": null,
+      "setup_applied": false,
+      "answer": "Boss, main aapke baare me kuch important details janti hoon, lekin aapko pata chalna chahiye ke main aapki digital assistant hoon, jo aapki help karne ke liye design ki gayi hoon. Yahan par mera jankari database aapke profile se hain, jo aapne apne preferences ke hisab se setup ki hain. Ab main aapke baare me jo details store kiye hain, woh aapke current goal, learning style, aur interests ke hisab se hain. Agar aapko pata chalna chahiye ke main kya janti hoon, toh main aapke profile me jo details h",
+      "verdict": "review_needed",
+      "checks": [
+        {
+          "check": "non_empty_output",
+          "result": "pass"
+        },
+        {
+          "check": "hinglish_script",
+          "result": "pass"
+        },
+        {
+          "check": "no_unnecessary_question",
+          "result": "pass"
+        },
+        {
+          "check": "no_repeated_sentence",
+          "result": "pass"
+        }
+      ],
+      "reasons": [
+        "One or more qualitative criteria need human review."
+      ],
+      "duration_seconds": 44.4418,
+      "first_output_seconds": 18.5886,
+      "retrieval": {
+        "seconds": 0.0,
+        "mode": "skipped_profile_question",
+        "item_count": 0
+      },
+      "ollama_metrics": {
+        "model": "qwen3:8b",
+        "done_reason": "length",
+        "load_seconds": 0.0047,
+        "prompt_eval_seconds": 18.283,
+        "generation_seconds": 25.8533,
+        "server_total_seconds": 44.3119,
+        "input_tokens": 2890,
+        "cached_input_tokens": 1753,
+        "output_tokens": 160,
+        "tokens_per_second": 6.189,
+        "client_request_seconds": 44.31404600001406,
+        "model_first_content_seconds": 18.461300200026017
+      },
+      "error": null,
+      "response_policy": [
+        "language.roman_hinglish",
+        "profile.personal_context"
+      ]
+    },
+    {
+      "id": "QUALITY-CHAT-001",
+      "category": "conversation.naturalness",
+      "severity": "medium",
+      "language_mode": "hinglish",
+      "user_message": "Hello Zara, kya chal raha hai?",
+      "history": [],
+      "required_context": null,
+      "pass_criteria": [
+        "Replies naturally and briefly in Roman Hinglish",
+        "Sounds friendly without forcing a joke",
+        "Does not give an unrelated lecture or list personal facts",
+        "Does not repeat an idea or add a generic help offer"
+      ],
+      "fail_conditions": [
+        "Uses Devanagari script",
+        "Sounds like a generic customer-service bot",
+        "Repeats the same point",
+        "Adds unnecessary theory or a forced follow-up"
+      ],
+      "rubric_tags": [
+        "naturalness",
+        "grammar",
+        "concision",
+        "no_repeated_sentence"
+      ],
+      "test_setup": null,
+      "setup_applied": false,
+      "answer": "Hello Boss, main theek hoon, aap kya kar rahi hain? 😊",
+      "verdict": "review_needed",
+      "checks": [
+        {
+          "check": "non_empty_output",
+          "result": "pass"
+        },
+        {
+          "check": "hinglish_script",
+          "result": "pass"
+        },
+        {
+          "check": "no_repeated_sentence",
+          "result": "pass"
+        }
+      ],
+      "reasons": [
+        "One or more qualitative criteria need human review."
+      ],
+      "duration_seconds": 22.1172,
+      "first_output_seconds": 18.7148,
+      "retrieval": {
+        "seconds": 0.0768,
+        "mode": "semantic",
+        "item_count": 3
+      },
+      "ollama_metrics": {
+        "model": "qwen3:8b",
+        "done_reason": "stop",
+        "load_seconds": 0.0033,
+        "prompt_eval_seconds": 18.4637,
+        "generation_seconds": 3.4018,
+        "server_total_seconds": 21.8923,
+        "input_tokens": 2898,
+        "cached_input_tokens": 1753,
+        "output_tokens": 22,
+        "tokens_per_second": 6.467,
+        "client_request_seconds": 21.914530199952424,
+        "model_first_content_seconds": 18.51276129996404
+      },
+      "error": null,
+      "response_policy": [
+        "language.roman_hinglish"
+      ]
+    }
+  ],
+  "repeat_penalty_override": null
+}

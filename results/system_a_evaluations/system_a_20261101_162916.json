@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "evaluation_id": "b05858efadab7bad96c3d13c",
+  "created_at": "2026-11-01T16:29:16.061653+05:30",
+  "dataset": {
+    "path": "D:\\Coding\\AI (Artificial Intelligence)\\Projects\\zara\\app\\knowledge\\system_a_eval_cases.jsonl",
+    "case_count": 10,
+    "sha256": "db42d7444a7a25de774c7b2c0c2379e18736cd81c2f7c4a4e53fa7eae90d1a65"
+  },
+  "scope": {
+    "database_writes": false,
+    "source_file_writes": false,
+    "production_promotions": false,
+    "code_patch_application": false
+  },
+  "static_acceptance": {
+    "checks": {
+      "rule_registry": true,
+      "validation_threshold_order": true,
+      "contradiction_detection": true,
+      "automatic_promotion_allowlist": true,
+      "answer_repair_script_detection": true,
+      "answer_repair_fallback": true,
+      "code_repair_rule_registry": true,
+      "code_repair_safe_patch": false,
+      "code_repair_dangerous_import_rejected": true,
+      "code_repair_invalid_syntax_rejected": true
+    },
+    "passed": 9,
+    "failed": 1,
+    "total": 10,
+    "status": "failed"
+  },
+  "model_evaluation": null,
+  "database_audit": null,
+  "baseline_comparison": null,
+  "source_provenance": {
+    "app\\improvement\\observer.py": "600b8cd9d2abff3882ccf16bf5bb8ef3c5f7ab143630b99ac6d6cfc374e45f52",
+    "app\\improvement_repair\\answer_repair.py": "4612c000ed1fe90e03d4f8d6018452f26f1ba97debb26d58e5b5484ac8fd4a17",
+    "app\\improvement_repair\\code_repair.py": "75bcff285e5f4779537ea5e75d0148ec82440b63cbc851581060f00d555e39ec",
+    "scripts\\eval_runner.py": "631c87b15117a595c32c28463ab58f493f97ef3626a0d4d9bc4aeef5c25ef639"
+  }
+}

@@ -1,0 +1,126 @@
+{
+  "created_at": "2026-10-19T20:47:48.811032+05:30",
+  "dataset_path": "D:\\Coding\\AI (Artificial Intelligence)\\Projects\\zara_v2_patch\\app\\knowledge\\hinglish_playbook_eval_cases.jsonl",
+  "dataset_case_count": 1,
+  "model": "qwen3:8b",
+  "settings": {
+    "temperature": 0.6,
+    "top_p": 0.9,
+    "max_history_messages": 12
+  },
+  "summary": {
+    "total": 1,
+    "verdict_counts": {
+      "pass": 0,
+      "fail": 0,
+      "review_needed": 1,
+      "error": 0
+    },
+    "category_counts": {
+      "rag.source_grounding": 1
+    },
+    "average_duration_seconds": 55.155,
+    "max_duration_seconds": 55.155
+  },
+  "cases": [
+    {
+      "id": "RAG-002",
+      "category": "rag.source_grounding",
+      "severity": "high",
+      "language_mode": "hinglish",
+      "user_message": "TOPIC 62 kahan hai? Sirf page number batao.",
+      "history": [],
+      "required_context": {
+        "topic_label": "TOPIC 62",
+        "physical_pdf_page": 1
+      },
+      "pass_criteria": [
+        "States page 1 only or with a minimal source label",
+        "Does not treat 62 as the PDF page"
+      ],
+      "fail_conditions": [
+        "Returns 62 as the page number",
+        "Adds a long explanation when only the page was requested"
+      ],
+      "rubric_tags": [
+        "grounding",
+        "concision"
+      ],
+      "test_setup": null,
+      "setup_applied": false,
+      "answer": "TOPIC 62 PDF page 1 hai.",
+      "verdict": "review_needed",
+      "checks": [
+        {
+          "check": "non_empty_output",
+          "result": "pass"
+        },
+        {
+          "check": "hinglish_script",
+          "result": "pass"
+        },
+        {
+          "check": "source_page_number",
+          "result": "pass"
+        },
+        {
+          "check": "page_answer_conciseness",
+          "result": "pass"
+        }
+      ],
+      "reasons": [
+        "One or more qualitative criteria need human review."
+      ],
+      "duration_seconds": 55.1548,
+      "first_output_seconds": 53.4212,
+      "retrieval": {
+        "seconds": 1.9161,
+        "mode": "semantic",
+        "item_count": 2
+      },
+      "ollama_metrics": {
+        "model": "qwen3:8b",
+        "done_reason": "stop",
+        "load_seconds": 12.0906,
+        "prompt_eval_seconds": 39.3835,
+        "generation_seconds": 1.7334,
+        "server_total_seconds": 53.2256,
+        "input_tokens": 2726,
+        "cached_input_tokens": 0,
+        "output_tokens": 12,
+        "tokens_per_second": 6.923,
+        "client_request_seconds": 53.23675470001763,
+        "model_first_content_seconds": 51.503933900006814
+      },
+      "error": null,
+      "response_policy": [
+        "language.roman_hinglish",
+        "rag.source_grounding"
+      ]
+    }
+  ],
+  "repeat_penalty_override": null,
+  "comparison": {
+    "baseline_file": "D:\\Coding\\AI (Artificial Intelligence)\\Projects\\zara_v2_patch\\results\\evaluations\\baseline.json",
+    "baseline_case_count": 61,
+    "current_case_count": 1,
+    "matched_case_count": 1,
+    "changed_answer_count": 1,
+    "changed_verdict_count": 1,
+    "duration_comparison_count": 1,
+    "average_duration_delta_seconds": 48.4553,
+    "per_case": [
+      {
+        "id": "RAG-002",
+        "answer_changed": true,
+        "verdict_before": "fail",
+        "verdict_after": "review_needed",
+        "verdict_changed": true,
+        "duration_before_seconds": 6.6995,
+        "duration_after_seconds": 55.1548,
+        "duration_delta_seconds": 48.4553,
+        "duration_delta_percent": 723.27
+      }
+    ]
+  }
+}

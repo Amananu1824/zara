@@ -1,0 +1,1 @@
+"""AI model client and shared chat engine."""

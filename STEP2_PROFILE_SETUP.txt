@@ -1,0 +1,24 @@
+ZARA V2 — STEP 2 PROFILE SETUP PATCH
+
+This is a small overlay patch. It does not include .env, database files, or caches.
+
+FILES
+- app/learning_ai/profile_defaults.py (new): compact profile defaults based on Aman’s answers
+- app/terminal/chat_loop.py (replacement): adds an explicit profile setup preview/confirm command
+- tests/test_profile_defaults.py (new): safe unit tests for the profile setup behavior
+
+APPLY
+1. Extract this ZIP directly into your existing zara_v2_patch project folder.
+2. Allow the existing app/terminal/chat_loop.py file to be replaced.
+3. Activate the project's venv.
+4. Run: python -m unittest discover -s tests -v
+5. Start Zara: python run.py
+6. At Zara's prompt, run: /profile-setup preview
+   This previews missing profile fields and makes no changes.
+7. If the preview looks right, run: /profile-setup confirm
+   This saves only missing default fields and leaves existing fields unchanged.
+8. Run: /profile
+   Review the saved values. Edit any one value with /profile-set <key> <value>.
+
+The setup command does not run automatically at startup. Profile values are stored in
+Zara's existing user_profile_cli profile store only after explicit confirmation.

@@ -1,0 +1,170 @@
+{
+  "created_at": "2026-10-19T16:43:14.162423+05:30",
+  "dataset_path": "D:\\Coding\\AI (Artificial Intelligence)\\Projects\\zara_v2_patch\\app\\knowledge\\hinglish_playbook_eval_cases.jsonl",
+  "dataset_case_count": 2,
+  "model": "qwen3:8b",
+  "settings": {
+    "temperature": 0.6,
+    "top_p": 0.9,
+    "max_history_messages": 12
+  },
+  "summary": {
+    "total": 2,
+    "verdict_counts": {
+      "pass": 0,
+      "fail": 1,
+      "review_needed": 1,
+      "error": 0
+    },
+    "category_counts": {
+      "rag.source_grounding": 2
+    },
+    "average_duration_seconds": 39.871,
+    "max_duration_seconds": 72.014
+  },
+  "cases": [
+    {
+      "id": "RAG-001",
+      "category": "rag.source_grounding",
+      "severity": "critical",
+      "language_mode": "hinglish",
+      "user_message": "PDF ke TOPIC 62 ke hisaab se empathy-like response kya hota hai? 2–3 lines mein samjhao aur source page bhi batao.",
+      "history": [],
+      "required_context": {
+        "source_file": "Human_Emotional_Behaviour_Hinglish_Notes_REVISED.pdf",
+        "topic_label": "TOPIC 62",
+        "physical_pdf_page": 1,
+        "content_summary": "An empathy-like response acknowledges the user's emotional situation respectfully and offers relevant practical help."
+      },
+      "pass_criteria": [
+        "Explains the concept accurately and briefly",
+        "Uses physical PDF page 1 as the source page",
+        "Keeps topic number TOPIC 62 distinct from physical page number"
+      ],
+      "fail_conditions": [
+        "Claims Source: Page 62",
+        "Invents a different source page",
+        "Adds unsupported details or ignores the short-answer request"
+      ],
+      "rubric_tags": [
+        "grounding",
+        "instruction_following",
+        "concision"
+      ],
+      "test_setup": null,
+      "setup_applied": false,
+      "answer": "TOPIC 62 ke hisaab se empathy-like response woh response hota hai jo user ki emotional sthiti ko samajhta hai, unke concern ko acknowledge karta hai aur phir practical help ya relevant next step provide karta hai. Yeh sirf \"nazar lagao\" nahi hai, balki situation ke hisaab se respectful aur understanding tarah se response diya jaata hai.  \n**Source:** Human_Emotional_Behaviour_Hinglish_Notes_REVISED.pdf, page 1",
+      "verdict": "review_needed",
+      "checks": [
+        {
+          "check": "non_empty_output",
+          "result": "pass"
+        },
+        {
+          "check": "hinglish_script",
+          "result": "pass"
+        },
+        {
+          "check": "source_page_number",
+          "result": "pass"
+        }
+      ],
+      "reasons": [
+        "One or more qualitative criteria need human review."
+      ],
+      "duration_seconds": 72.0144,
+      "first_output_seconds": 53.5568,
+      "retrieval": {
+        "seconds": 1.885,
+        "mode": "semantic",
+        "item_count": 3
+      },
+      "ollama_metrics": {
+        "model": "qwen3:8b",
+        "done_reason": "stop",
+        "load_seconds": 12.3479,
+        "prompt_eval_seconds": 39.2955,
+        "generation_seconds": 18.4584,
+        "server_total_seconds": 70.126,
+        "input_tokens": 2594,
+        "cached_input_tokens": 0,
+        "output_tokens": 110,
+        "tokens_per_second": 5.959,
+        "client_request_seconds": 70.12790059999679,
+        "model_first_content_seconds": 51.670624299993506
+      },
+      "error": null
+    },
+    {
+      "id": "RAG-002",
+      "category": "rag.source_grounding",
+      "severity": "high",
+      "language_mode": "hinglish",
+      "user_message": "TOPIC 62 kahan hai? Sirf page number batao.",
+      "history": [],
+      "required_context": {
+        "topic_label": "TOPIC 62",
+        "physical_pdf_page": 1
+      },
+      "pass_criteria": [
+        "States page 1 only or with a minimal source label",
+        "Does not treat 62 as the PDF page"
+      ],
+      "fail_conditions": [
+        "Returns 62 as the page number",
+        "Adds a long explanation when only the page was requested"
+      ],
+      "rubric_tags": [
+        "grounding",
+        "concision"
+      ],
+      "test_setup": null,
+      "setup_applied": false,
+      "answer": "TOPIC 62 के पैज नंबर 142 है, बॉस।",
+      "verdict": "fail",
+      "checks": [
+        {
+          "check": "non_empty_output",
+          "result": "pass"
+        },
+        {
+          "check": "hinglish_script",
+          "result": "fail"
+        },
+        {
+          "check": "source_page_number",
+          "result": "review_needed"
+        },
+        {
+          "check": "page_answer_conciseness",
+          "result": "pass"
+        }
+      ],
+      "reasons": [
+        "Devanagari characters appeared in a Roman Hinglish response."
+      ],
+      "duration_seconds": 7.727,
+      "first_output_seconds": 2.8033,
+      "retrieval": {
+        "seconds": 0.118,
+        "mode": "semantic",
+        "item_count": 0
+      },
+      "ollama_metrics": {
+        "model": "qwen3:8b",
+        "done_reason": "stop",
+        "load_seconds": 0.0071,
+        "prompt_eval_seconds": 2.6284,
+        "generation_seconds": 4.924,
+        "server_total_seconds": 7.5811,
+        "input_tokens": 1958,
+        "cached_input_tokens": 1828,
+        "output_tokens": 31,
+        "tokens_per_second": 6.296,
+        "client_request_seconds": 7.608203599986155,
+        "model_first_content_seconds": 2.684721099998569
+      },
+      "error": null
+    }
+  ]
+}

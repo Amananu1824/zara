@@ -1,0 +1,404 @@
+{
+  "schema_version": 1,
+  "evaluation_id": "0b249054f166ccf8957fedf6",
+  "created_at": "2026-11-01T16:35:21.514478+05:30",
+  "dataset": {
+    "path": "D:\\Coding\\AI (Artificial Intelligence)\\Projects\\zara\\app\\knowledge\\system_a_eval_cases.jsonl",
+    "case_count": 10,
+    "sha256": "db42d7444a7a25de774c7b2c0c2379e18736cd81c2f7c4a4e53fa7eae90d1a65"
+  },
+  "scope": {
+    "database_writes": false,
+    "source_file_writes": false,
+    "production_promotions": false,
+    "code_patch_application": false
+  },
+  "static_acceptance": {
+    "checks": {
+      "rule_registry": true,
+      "validation_threshold_order": true,
+      "contradiction_detection": true,
+      "automatic_promotion_allowlist": true,
+      "answer_repair_script_detection": true,
+      "answer_repair_fallback": true,
+      "code_repair_rule_registry": true,
+      "code_repair_safe_patch": false,
+      "code_repair_dangerous_import_rejected": true,
+      "code_repair_invalid_syntax_rejected": true
+    },
+    "passed": 9,
+    "failed": 1,
+    "total": 10,
+    "status": "failed"
+  },
+  "model_evaluation": {
+    "total_cases": 10,
+    "completed_cases": 10,
+    "error_cases": 0,
+    "issue_classification": {
+      "tp": 2,
+      "fp": 6,
+      "fn": 10,
+      "precision": 0.25,
+      "recall": 0.1667,
+      "f1": 0.2
+    },
+    "lesson_extraction": {
+      "tp": 0,
+      "fp": 0,
+      "fn": 7,
+      "precision": 1.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "confidence_calibration": {
+      "brier_score": 0.7746,
+      "interpretation": "Lower is better; compare across repeat runs."
+    },
+    "cases": [
+      {
+        "id": "SA-001",
+        "status": "review_needed",
+        "expected_issue_codes": [
+          "intent_mismatch",
+          "user_preference_miss"
+        ],
+        "predicted_issue_codes": [
+          "emotion_mismatch",
+          "intent_mismatch",
+          "response_mode_mismatch",
+          "unnecessary_ai_disclosure"
+        ],
+        "expected_rule_keys": [
+          "intent.context"
+        ],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 1,
+          "false_positive": 3,
+          "false_negative": 1,
+          "precision": 0.25,
+          "recall": 0.5,
+          "f1": 0.3333
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      {
+        "id": "SA-002",
+        "status": "review_needed",
+        "expected_issue_codes": [
+          "emotion_mismatch",
+          "response_mode_mismatch"
+        ],
+        "predicted_issue_codes": [
+          "grammar",
+          "roman_hinglish",
+          "unnecessary_question"
+        ],
+        "expected_rule_keys": [
+          "emotion.proportionate"
+        ],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 0,
+          "false_positive": 3,
+          "false_negative": 2,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      {
+        "id": "SA-003",
+        "status": "review_needed",
+        "expected_issue_codes": [
+          "roman_hinglish"
+        ],
+        "predicted_issue_codes": [],
+        "expected_rule_keys": [
+          "language.roman_hinglish"
+        ],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      {
+        "id": "SA-004",
+        "status": "review_needed",
+        "expected_issue_codes": [
+          "feminine_agreement"
+        ],
+        "predicted_issue_codes": [
+          "feminine_agreement"
+        ],
+        "expected_rule_keys": [
+          "language.feminine_agreement"
+        ],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 1,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      {
+        "id": "SA-005",
+        "status": "review_needed",
+        "expected_issue_codes": [
+          "tool_result_inaccuracy",
+          "unsupported_claim"
+        ],
+        "predicted_issue_codes": [],
+        "expected_rule_keys": [],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 2,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      {
+        "id": "SA-006",
+        "status": "review_needed",
+        "expected_issue_codes": [
+          "repetition",
+          "unnecessary_question"
+        ],
+        "predicted_issue_codes": [],
+        "expected_rule_keys": [
+          "response.follow_up"
+        ],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 2,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      {
+        "id": "SA-007",
+        "status": "review_needed",
+        "expected_issue_codes": [
+          "repetition"
+        ],
+        "predicted_issue_codes": [],
+        "expected_rule_keys": [
+          "response.repetition"
+        ],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      {
+        "id": "SA-008",
+        "status": "review_needed",
+        "expected_issue_codes": [
+          "physical_experience_claim"
+        ],
+        "predicted_issue_codes": [],
+        "expected_rule_keys": [
+          "persona.honesty"
+        ],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      {
+        "id": "SA-009",
+        "status": "review_needed",
+        "expected_issue_codes": [],
+        "predicted_issue_codes": [],
+        "expected_rule_keys": [],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      {
+        "id": "SA-010",
+        "status": "review_needed",
+        "expected_issue_codes": [],
+        "predicted_issue_codes": [],
+        "expected_rule_keys": [],
+        "predicted_rule_keys": [],
+        "issue_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "rule_scores": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      }
+    ]
+  },
+  "database_audit": {
+    "read_only": true,
+    "tables": {
+      "zara_improvement_turn_traces": true,
+      "zara_lesson_candidates": true,
+      "zara_production_lessons": true,
+      "zara_lesson_promotion_events": true,
+      "zara_lesson_promotion_authorizations": true,
+      "zara_code_repair_proposals": false,
+      "zara_code_repair_events": false
+    },
+    "violations": [],
+    "missing_tables": [
+      "zara_code_repair_proposals",
+      "zara_code_repair_events"
+    ],
+    "review_status_counts": {
+      "completed": 13,
+      "queued": 5
+    },
+    "answer_repair_status_counts": {
+      "unchanged": 1,
+      "missing": 17
+    },
+    "candidate_status_counts": {
+      "candidate": 11
+    },
+    "invalid_validated_candidates": [],
+    "duplicate_active_rules": [],
+    "production_state_mismatches": [],
+    "automatic_promotion_authorization": {
+      "enabled": true,
+      "allowed_rule_keys": [
+        "emotion.proportionate",
+        "intent.context",
+        "language.feminine_agreement",
+        "language.roman_hinglish",
+        "persona.honesty",
+        "response.conciseness",
+        "response.follow_up",
+        "response.repetition"
+      ],
+      "max_risk_level": "medium",
+      "policy_version": 1
+    },
+    "promotion_event_counts": [],
+    "status": "incomplete_schema"
+  },
+  "baseline_comparison": {
+    "status": "error",
+    "error_code": "FileNotFoundError"
+  },
+  "source_provenance": {
+    "app\\improvement\\observer.py": "600b8cd9d2abff3882ccf16bf5bb8ef3c5f7ab143630b99ac6d6cfc374e45f52",
+    "app\\improvement_repair\\answer_repair.py": "4612c000ed1fe90e03d4f8d6018452f26f1ba97debb26d58e5b5484ac8fd4a17",
+    "app\\improvement_repair\\code_repair.py": "75bcff285e5f4779537ea5e75d0148ec82440b63cbc851581060f00d555e39ec",
+    "scripts\\eval_runner.py": "631c87b15117a595c32c28463ab58f493f97ef3626a0d4d9bc4aeef5c25ef639"
+  }
+}

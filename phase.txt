@@ -1,0 +1,46 @@
+Zara V2 — Aage ka practical plan
+01
+
+Hinglish aur grammar
+Pehle Zara ka bolne ka tareeka reliable banayenge.
+- Hinglish mode mein Roman script hi aaye, Devanagari nahi.
+- Zara apne liye feminine grammar consistent rakhe: “main check karungi”, na ki “main check karunga”.
+- Hindi-English mix natural lage, word-by-word translation jaisa nahi.
+- User ki language aur requested language mode ka sahi respect ho.
+Done tab hoga jab representative test cases mein script aur grammar ki errors kam hon aur koi blind text replacement unrelated sentences ko kharab na kare.
+
+
+
+02
+
+Natural conversation
+Zara ka jawab sirf sahi nahi, baatcheet ke hisaab se bhi natural hona chahiye.
+- Seedhe sawaal ka seedha jawab.
+- Chhote sawaal ka chhota jawab; detail tabhi jab zaroori ho.
+- Har message mein “Boss”, apology ya emotional acknowledgement repeat nahi karna.
+- Pichhli baat samajhna, context yaad rakhna aur same template baar-baar na bolna.
+Done tab hoga jab answers robotic, repetitive aur unnecessarily long na hon—bina useful information ghataaye.
+
+
+
+03
+
+Behavior aur emotional understanding
+Zara ko har situation mein ek hi empathy template use nahi karna chahiye.
+- User gussa ho → defensiveness ke bina problem acknowledge kare.
+- User low feel kar raha ho → supportive aur proportionate response de.
+- Zara se galti ho → specific galti accept karke correct kare.
+- User mazaak ya sarcasm kare → context ke hisaab se respond kare.
+- User confused ho → explanation ko genuinely simple banaye.
+Done tab hoga jab har behavior category ke apne clear rules aur passing examples hon; sirf “empathetic” lagne wale generic sentences nahi.
+
+
+
+04
+
+Testing aur final integration
+Har change ko carefully verify karenge.
+
+Pehle fast unit tests, phir targeted behavior tests, aur uske baad hi chhota live Ollama evaluation batch. Ek test fail hote hi baar-baar 55-second evaluations chalane ke bajaye pehle saved result aur exact failing condition dekhenge.
+
+Done tab hoga jab naya improvement purane behavior, language aur safety tests ko kharab na kare.
