@@ -5,13 +5,11 @@ import time
 from typing import Any
 import json
 
-from app.improvement_repair.code_repair import CodeRepairService
 from app.ai.chat_engine import ChatEngine
 from app.ai.ollama_client import OllamaClient, OllamaError
 from app.core.prompt_manager import PromptManager
 from app.terminal.language import normalize_language_mode
 from app.terminal.ollama_stream import stream_chat_response
-from app.learning_ai.document_ingest import DocumentIngestor
 from app.learning_ai.profile_defaults import (
     DEFAULT_PROFILE_FIELDS,
     get_profile_setup_status,
@@ -49,6 +47,12 @@ HELP_TEXT = """Commands:
   /document-archive <id>        Archive an active document
   /document-restore <id>        Restore a previous document version
   /document-history <id>        Show document lifecycle history
+  /document-delete <id>          Preview reversible document deletion
+  /document-delete-confirm <id> Confirm document deletion
+  /document-retention-preview    Preview expired trash records
+  /document-retention-purge confirm Permanently purge expired content
+  /document-integrity <id>       Verify stored document integrity
+  /document-reindex <id>         Recover a damaged active document index
   /doc-search <query>           Search indexed document chunks
   /memory-latest [all|profile|notes]   Show recent saved records
   /memory-search <query>               Search saved profile fields and notes
@@ -97,10 +101,8 @@ def run_chat_loop() -> None:
             allow_database_tools=True,
             allow_database_mutations=True,
         )
-        document_ingestor = DocumentIngestor(engine.learning_store)
-        code_repair_service = CodeRepairService(
-            engine.learning_store
-        )
+        document_ingestor = engine.document_ingestor
+        code_repair_service = engine.code_repair_service
 
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         print(f"Zara setup error: {exc}")
@@ -823,12 +825,19 @@ def run_chat_loop() -> None:
             pieces = user_message.split(maxsplit=1)
             scope = pieces[1].strip().lower() if len(pieces) == 2 else "all"
 
-            result = engine.database_tools.execute_tool(
+            result = engine.dispatch_action(
                 "memory_latest",
                 {"scope": scope, "limit": 10},
                 user_message,
+                source="terminal_command",
             )
-            print(engine.database_tools.render_result(result) + "\n")
+
+            print(
+                engine.action_router.render_result(
+                    result,
+                    tool_name="memory_latest",
+                ) + "\n"
+            )
             continue
 
         if command == "/memory-search" or command.startswith("/memory-search "):
@@ -838,7 +847,7 @@ def run_chat_loop() -> None:
                 print("Use: /memory-search <query>\n")
                 continue
 
-            result = engine.database_tools.execute_tool(
+            result = engine.dispatch_action(
                 "memory_search",
                 {
                     "query": pieces[1].strip(),
@@ -846,8 +855,15 @@ def run_chat_loop() -> None:
                     "limit": 10,
                 },
                 user_message,
+                source="terminal_command",
             )
-            print(engine.database_tools.render_result(result) + "\n")
+
+            print(
+                engine.action_router.render_result(
+                    result,
+                    tool_name="memory_search",
+                ) + "\n"
+            )
             continue
 
         if command == "/profile-setup preview":
@@ -898,7 +914,11 @@ def run_chat_loop() -> None:
                 print("Use: /profile-set <key> <value>\n")
                 continue
             try:
-                result = engine.request_profile_save(pieces[1], pieces[2])
+                result = engine.request_profile_save(
+                    pieces[1],
+                    pieces[2],
+                    user_message=user_message,
+                )
             except Exception as exc:
                 print(f"[Profile error] {exc}\n")
             else:
@@ -912,7 +932,10 @@ def run_chat_loop() -> None:
                 print("Use: /profile-delete <key>\n")
                 continue
             try:
-                result = engine.request_profile_delete_by_key(pieces[1])
+                result = engine.request_profile_delete_by_key(
+                    pieces[1],
+                    user_message=user_message,
+                )
             except Exception as exc:
                 print(f"[Profile error] {exc}\n")
             else:
@@ -1092,6 +1115,22 @@ def run_chat_loop() -> None:
                     f"Chunks: {document['chunk_count']}"
                 )
 
+                print(
+                    f"  Integrity: "
+                    f"{document.get('integrity_status', 'unchecked')}"
+                )
+
+                if document.get("retention_until"):
+                    print(
+                        "  Trash retention until: "
+                        f"{document['retention_until']}"
+                    )
+
+                if document.get("purged_at"):
+                    print(
+                        f"  Purged at: {document['purged_at']}"
+                    )
+
                 if document.get("source_path"):
                     print(f"  Source path: {document['source_path']}")
 
@@ -1126,7 +1165,8 @@ def run_chat_loop() -> None:
 
             try:
                 result = document_ingestor.archive_document(
-                    int(pieces[1])
+                    int(pieces[1]),
+                    actor="terminal_owner",
                 )
 
                 print(
@@ -1151,7 +1191,8 @@ def run_chat_loop() -> None:
 
             try:
                 result = document_ingestor.restore_document(
-                    int(pieces[1])
+                    int(pieces[1]),
+                    actor="terminal_owner",
                 )
 
                 print(
@@ -1201,6 +1242,206 @@ def run_chat_loop() -> None:
                 )
 
             print()
+            continue
+
+        if command == "/document-delete" or command.startswith(
+            "/document-delete "
+        ):
+            pieces = user_message.split()
+
+            if len(pieces) != 2 or not pieces[1].isdigit():
+                print("Use: /document-delete <id>\n")
+                continue
+
+            try:
+                result = document_ingestor.delete_document(
+                    int(pieces[1]),
+                    actor="terminal_owner",
+                )
+
+                print(
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    )
+                )
+
+                if result.get("status") == "needs_confirmation":
+                    print(
+                        "\nDocument content abhi delete nahi hua. "
+                        "Confirmation ke liye displayed command use karein.\n"
+                    )
+
+            except Exception as exc:
+                print(
+                    "[Document delete error] "
+                    f"{type(exc).__name__}\n"
+                )
+
+            continue
+
+        if command.startswith("/document-delete-confirm "):
+            pieces = user_message.split()
+
+            if (
+                len(pieces) != 3
+                or not pieces[1].isdigit()
+                or not pieces[2].isdigit()
+            ):        
+                print("Use: /document-delete-confirm <id>\n")
+                continue
+
+            try:
+                result = document_ingestor.delete_document(
+                    int(pieces[1]),
+                    confirmed=True,
+                    expected_source_version=int(pieces[2]),
+                    actor="terminal_owner",
+                )
+
+                print(
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                    "\n",
+                )
+
+            except Exception as exc:
+                print(
+                    "[Document deletion confirmation error] "
+                    f"{type(exc).__name__}\n"
+                )
+
+            continue
+
+        if command == "/document-retention-preview":
+
+            try:
+                result = (
+                    document_ingestor.preview_expired_document_purge()
+                )
+
+                print(
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                    "\n",
+                )
+
+            except Exception as exc:
+                print(
+                    "[Document retention preview error] "
+                    f"{type(exc).__name__}\n"
+                )
+
+            continue
+
+        if command == "/document-retention-purge":
+
+            print(
+                "Permanent purge requires explicit confirmation.\n"
+                "Use: /document-retention-purge confirm\n"
+                "First review /document-retention-preview.\n"
+            )
+
+            continue
+
+        if command == "/document-retention-purge confirm":
+
+            try:
+                result = document_ingestor.purge_expired_documents(
+                    confirmed=True,
+                    actor="terminal_owner",
+                )
+
+                print(
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                    "\n",
+                )
+
+            except Exception as exc:
+                print(
+                    "[Document retention purge error] "
+                    f"{type(exc).__name__}\n"
+                )
+
+            continue
+
+        if command.startswith("/document-integrity "):
+
+            pieces = user_message.split()
+
+            if len(pieces) != 2 or not pieces[1].isdigit():
+                print("Use: /document-integrity <id>\n")
+                continue
+
+            try:
+                result = document_ingestor.verify_document_integrity(
+                    int(pieces[1]),
+                    actor="terminal_owner",
+                )
+
+                print(
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                    "\n",
+                )
+
+            except Exception as exc:
+                print(
+                    "[Document integrity error] "
+                    f"{type(exc).__name__}\n"
+                )
+
+            continue
+
+        if command.startswith("/document-reindex "):
+
+            pieces = user_message.split()
+
+            if len(pieces) != 2 or not pieces[1].isdigit():
+                print("Use: /document-reindex <id>\n")
+                continue
+
+            try:
+                result = document_ingestor.reindex_document(
+                    int(pieces[1]),
+                    actor="terminal_owner",
+                )
+
+                print(
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                    "\n",
+                )
+
+            except Exception as exc:
+                print(
+                    "[Document reindex error] "
+                    f"{type(exc).__name__}\n"
+                )
+
             continue
         
         if command == "/doc-search" or command.startswith("/doc-search "):
@@ -1322,13 +1563,19 @@ def run_chat_loop() -> None:
             try:
                 feedback_id = int(pieces[1])
 
-                result = engine.database_tools.execute_tool(
+                result = engine.dispatch_action(
                     "feedback_review",
                     {"feedback_id": feedback_id},
                     user_message,
+                    source="terminal_command",
                 )
 
-                print(engine.database_tools.render_result(result) + "\n")
+                print(
+                    engine.action_router.render_result(
+                        result,
+                        tool_name="feedback_review",
+                    ) + "\n"
+                )
 
             except (ValueError, TypeError) as exc:
                 print(f"[Feedback error] {exc}\n")

@@ -38,21 +38,46 @@ _ALLOWED_RULES = {
 }
 
 _RULE_ISSUE_EVIDENCE = {
-    "intent.context": {"intent_mismatch", "context_miss"},
-    "emotion.proportionate": {"emotion_mismatch"},
-    "language.roman_hinglish": {"roman_hinglish"},
-    "language.feminine_agreement": {"feminine_agreement"},
-    "factual.grounding": {"unsupported_claim"},
-    "memory.profile_recall": {"profile_recall"},
-    "retrieval.policy": {"retrieval_miss"},
-    "tool.permission": {"tool_routing_failure"},
-    "response.follow_up": {"unnecessary_question"},
-    "response.repetition": {"repetition"},
+    "intent.context": {
+        "intent_mismatch",
+        "context_miss",
+    },
+    "emotion.proportionate": {
+        "emotion_mismatch",
+    },
+    "language.roman_hinglish": {
+        "roman_hinglish",
+    },
+    "language.feminine_agreement": {
+        "feminine_agreement",
+    },
+    "factual.grounding": {
+        "unsupported_claim",
+    },
+    "memory.profile_recall": {
+        "profile_recall",
+    },
+    "retrieval.policy": {
+        "retrieval_miss",
+    },
+    "tool.permission": {
+        "tool_routing_failure",
+        "tool_result_inaccuracy",
+    },
+    "response.follow_up": {
+        "unnecessary_question",
+    },
+    "response.repetition": {
+        "repetition",
+    },
     "persona.honesty": {
         "physical_experience_claim",
         "unnecessary_ai_disclosure",
     },
-    "response.conciseness": {"unnecessary_question"},
+    "response.conciseness": {
+        "unnecessary_question",
+        "output_constraint",
+    },
 }
 
 _DETERMINISTIC_RULE_EVIDENCE = {
@@ -442,6 +467,13 @@ def _safe_selected_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
         safe: dict[str, Any] = {}
         for key in (
+            "evidence_id",
+            "stable_chunk_id",
+            "content_sha256",
+            "retrieval_score",
+            "semantic_similarity",
+            "keyword_score",
+            "updated_at_epoch",
             "source",
             "label",
             "rule_id",
@@ -513,13 +545,23 @@ def _safe_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         "first_output_seconds", "model_load_seconds", "prompt_eval_seconds",
         "prompt_chars", "prompt_messages", "history_messages",
         "input_tokens", "output_tokens", "database_tool_call_count", "model",
-        "answer_repair_status", "answer_repair_duration_ms", "answer_repair_issue_count",
+        "answer_repair_status",
+        "answer_repair_duration_ms",
+        "answer_repair_issue_count",
+        "evidence_verification_status",
+        "evidence_verification_blocked",
+        "evidence_claim_count",
+        "evidence_unknown_citations",
+        "evidence_possible_conflicts",
+        "evidence_confidence",
     }
 
     result: dict[str, Any] = {}
     for key in allowed:
         value = metrics.get(key)
         if isinstance(value, bool):
+            if key == "evidence_verification_blocked":
+                result[key] = value
             continue
         if isinstance(value, (int, float)) and math.isfinite(value):
             result[key] = value
@@ -527,6 +569,8 @@ def _safe_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
             "status",
             "model",
             "answer_repair_status",
+            "evidence_verification_status",
+            "evidence_confidence",
         } and isinstance(value, str):
             result[key] = value[:100]
 
@@ -929,7 +973,20 @@ class _TraceRepository:
                     priority DESC
                 )
             """)
-
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_zara_production_lesson_fts
+                ON zara_production_lessons
+                USING GIN (
+                    to_tsvector(
+                        'simple',
+                        COALESCE(rule_key, '') || ' ' ||
+                        COALESCE(category, '') || ' ' ||
+                        COALESCE(scope, '') || ' ' ||
+                        COALESCE(lesson_text, '')
+                    )
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS zara_lesson_promotion_events (
                     id BIGSERIAL PRIMARY KEY,
@@ -2821,12 +2878,15 @@ class _TraceRepository:
                 conn.execute("""
                     UPDATE zara_production_lessons
                     SET
-                        category = %s,
+                        category = %s,  
                         scope = %s,
                         risk_level = %s,
                         priority = %s,
                         embedding = %s::vector,
                         embedding_model = %s,
+                        embedding_model_version = %s,
+                        embedding_dimensions = %s,
+                        embedding_format_version = %s,
                         embedding_text_hash = %s,
                         active = TRUE,
                         activated_at = NOW(),
@@ -3628,6 +3688,7 @@ def _run_local_review(
         "decision": job["decision"],
         "response_policy_ids": job["response_policy_ids"],
         "retrieval_summary": job["retrieval_summary"],
+        "tool_trace": job.get("tool_trace", [])[:20],
         "context": job["review_context"],
         "deterministic_review": job["deterministic_review"],
         "answer_repair_summary": job.get(
@@ -3952,6 +4013,7 @@ class ImprovementObserver:
             "decision": row["decision"],
             "response_policy_ids": row["response_policy_ids"],
             "retrieval_summary": retrieval_summary,
+            "tool_trace": row["tool_summary"],
             "review_context": {
                 key: [
                     _clean_text(item, 700)

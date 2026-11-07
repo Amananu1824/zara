@@ -43,17 +43,32 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
         _ALLOWED_RULES,
     )
 
-    cases = []
-    seen = set()
+    allowed_tool_fields = {
+        "tool",
+        "tool_name",
+        "name",
+        "operation",
+        "status",
+        "error_code",
+        "code",
+        "requires_confirmation",
+        "call_id",
+    }
+
+    cases: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
     with path.open("r", encoding="utf-8-sig") as handle:
-
         for line_number, line in enumerate(handle, 1):
-
             if not line.strip():
                 continue
 
-            case = json.loads(line)
+            try:
+                case = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Line {line_number}: invalid JSON."
+                ) from exc
 
             if not isinstance(case, dict):
                 raise ValueError(
@@ -67,15 +82,16 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
                     f"Line {line_number}: invalid or duplicate ID."
                 )
 
-            if not isinstance(case.get("user_message"), str):
-                raise ValueError(
-                    f"{case_id}: user_message is required."
-                )
+            for required_field in (
+                "user_message",
+                "assistant_answer",
+            ):
+                value = case.get(required_field)
 
-            if not isinstance(case.get("assistant_answer"), str):
-                raise ValueError(
-                    f"{case_id}: assistant_answer is required."
-                )
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"{case_id}: {required_field} is required."
+                    )
 
             for field in (
                 "expected_issue_codes",
@@ -83,9 +99,15 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
             ):
                 values = case.get(field, [])
 
-                if not isinstance(values, list):
+                if (
+                    not isinstance(values, list)
+                    or any(
+                        not isinstance(value, str) or not value.strip()
+                        for value in values
+                    )
+                ):
                     raise ValueError(
-                        f"{case_id}: {field} must be a list."
+                        f"{case_id}: {field} must be a list of strings."
                     )
 
                 if len(values) != len(set(values)):
@@ -108,15 +130,103 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
                     f"{case_id}: unsupported evaluation labels."
                 )
 
-            if not isinstance(case.get("decision", {}), dict):
+            for field in (
+                "decision",
+                "retrieval_summary",
+                "answer_repair_summary",
+            ):
+                if not isinstance(case.get(field, {}), dict):
+                    raise ValueError(
+                        f"{case_id}: {field} must be an object."
+                    )
+
+            if not isinstance(case.get("language_mode", "hinglish"), str):
                 raise ValueError(
-                    f"{case_id}: decision must be an object."
+                    f"{case_id}: language_mode must be a string."
                 )
 
-            if not isinstance(case.get("review_context", {}), dict):
+            if not isinstance(case.get("output_constraint", "normal"), str):
+                raise ValueError(
+                    f"{case_id}: output_constraint must be a string."
+                )
+
+            response_policy_ids = case.get("response_policy_ids", [])
+
+            if (
+                not isinstance(response_policy_ids, list)
+                or any(
+                    not isinstance(value, str)
+                    for value in response_policy_ids
+                )
+            ):
+                raise ValueError(
+                    f"{case_id}: response_policy_ids must be strings."
+                )
+
+            history = case.get("review_context", {})
+
+            if not isinstance(history, dict):
                 raise ValueError(
                     f"{case_id}: review_context must be an object."
                 )
+
+            for key, value in history.items():
+                if key == "tool_trace":
+                    continue
+
+                if (
+                    not isinstance(value, list)
+                    or any(not isinstance(item, str) for item in value)
+                ):
+                    raise ValueError(
+                        f"{case_id}: review_context.{key} "
+                        "must be a list of strings."
+                    )
+
+            tool_trace = case.get(
+                "tool_trace",
+                history.get("tool_trace", []),
+            )
+
+            if not isinstance(tool_trace, list) or len(tool_trace) > 20:
+                raise ValueError(
+                    f"{case_id}: tool_trace must be a bounded list."
+                )
+
+            for trace_index, trace_item in enumerate(tool_trace):
+                if not isinstance(trace_item, dict):
+                    raise ValueError(
+                        f"{case_id}: tool_trace item "
+                        f"{trace_index} must be an object."
+                    )
+
+                unknown_fields = (
+                    set(trace_item) - allowed_tool_fields
+                )
+
+                if unknown_fields:
+                    raise ValueError(
+                        f"{case_id}: unsupported tool_trace fields."
+                    )
+
+                if any(
+                    not isinstance(
+                        value,
+                        (str, int, float, bool, type(None)),
+                    )
+                    for value in trace_item.values()
+                ):
+                    raise ValueError(
+                        f"{case_id}: tool_trace values must be scalar."
+                    )
+
+            # Normalize nested legacy tool traces into one canonical field.
+            case["tool_trace"] = tool_trace
+            case["review_context"] = {
+                key: value
+                for key, value in history.items()
+                if key != "tool_trace"
+            }
 
             seen.add(case_id)
             cases.append(case)
@@ -318,6 +428,8 @@ def run_static_acceptance() -> dict[str, Any]:
     except CodeRepairError:
         safe_patch_accepted = False
 
+    checks["code_repair_safe_patch"] = safe_patch_accepted
+
     try:
         CodeRepairService._validate_source(
             safe_original,
@@ -413,11 +525,24 @@ def run_model_evaluation(
                     "normal",
                 ),
                 "decision": decision,
-                "response_policy_ids": [],
-                "retrieval_summary": {},
+                "response_policy_ids": case.get(
+                    "response_policy_ids",
+                    [],
+                ),
+                "retrieval_summary": case.get(
+                    "retrieval_summary",
+                    {},
+                ),
+                "tool_trace": case.get(
+                    "tool_trace",
+                    [],
+                ),
                 "review_context": history,
                 "deterministic_review": deterministic,
-                "answer_repair_summary": {},
+                "answer_repair_summary": case.get(
+                    "answer_repair_summary",
+                    {},
+                ),
             }
 
             try:
@@ -492,7 +617,7 @@ def run_model_evaluation(
                     for item in report.get("issues", [])
                 }
 
-                for code in expected_issues | predicted_issues:
+                for code in expected_issues | model_predicted_issues:
 
                     probability = confidence_by_code.get(
                         code,
@@ -623,6 +748,19 @@ def run_model_evaluation(
                     1,
                     model_issue_totals["tp"]
                     + model_issue_totals["fn"],
+                ),
+                4,
+            ),
+            "f1": round(
+                (
+                    2 * model_issue_totals["tp"]
+                ) / max(
+                    1,
+                    (
+                        2 * model_issue_totals["tp"]
+                        + model_issue_totals["fp"]
+                        + model_issue_totals["fn"]
+                    ),
                 ),
                 4,
             ),
@@ -1232,6 +1370,12 @@ def main() -> int:
         PROJECT_ROOT / "app" / "improvement_repair" / "answer_repair.py",
         PROJECT_ROOT / "app" / "improvement_repair" / "code_repair.py",
         PROJECT_ROOT / "scripts" / "eval_runner.py",
+        PROJECT_ROOT / "scripts" / "system_a_eval_runner.py",
+        PROJECT_ROOT / "app" / "knowledge" / "system_a_eval_cases.jsonl",
+        PROJECT_ROOT / "app" / "ai" / "chat_engine.py",
+        PROJECT_ROOT / "app" / "learning_ai" / "learning_store.py",
+        PROJECT_ROOT / "app" / "learning_ai" / "embedding_client.py",
+        PROJECT_ROOT / "app" / "learning_ai" / "document_ingest.py",
     ]
 
     report["source_provenance"] = {

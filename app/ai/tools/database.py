@@ -14,9 +14,13 @@ from typing import Any
 
 from app.learning_ai.document_ingest import DocumentIngestor
 from app.core.task_result import TaskResult, TaskStatus
-from app.ai.tools.registry import ToolRegistry, ToolValidationError
 from app.ai.tools.permissions import ToolPermissionPolicy
 from app.memory_management.manager import MemoryOperationCancelled
+from app.ai.tools.registry import (
+    ToolMetadata,
+    ToolRegistry,
+    ToolValidationError,
+)
 from app.learning_ai.learning_store import (
     DatabaseOperationCancelled,
     DatabaseOperationOutcomeUnknown,
@@ -553,8 +557,10 @@ _READ_ONLY_TOOL_NAMES.update({
 
 DATABASE_TOOL_REGISTRY = ToolRegistry(
     DATABASE_TOOL_DEFINITIONS,
+
     read_only_tools=_READ_ONLY_TOOL_NAMES,
     mutating_tools=_MUTATING_TOOL_NAMES,
+
     confirmation_tools={
         "memory_update",
         "memory_delete",
@@ -568,9 +574,22 @@ DATABASE_TOOL_REGISTRY = ToolRegistry(
         "topic_memory_repair_apply",
         "topic_memory_repair_rollback",
     },
+
     conditional_confirmation_tools={
         "profile_save",
     },
+
+    default_metadata=ToolMetadata(
+        category="database",
+        version="1.0.0",
+        provider="application",
+        supported_interfaces=(
+            "terminal",
+            "api",
+        ),
+        risk_level="low",
+        required_scopes=(),
+    ),
 )
 
 _REVIEW_FEEDBACK_PATTERN = re.compile(
@@ -2729,7 +2748,18 @@ class DatabaseToolService:
                 }
 
             if tool_name == "profile_save":
-                if not self._has_explicit_save_request(user_message):
+                explicit_profile_set = bool(
+                    re.fullmatch(
+                        r"/profile-set\s+\S+\s+.+",
+                        user_message.strip(),
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+                )
+
+                if (
+                    not self._has_explicit_save_request(user_message)
+                    and not explicit_profile_set
+                ):
                     return {
                         "status": "denied",
                         "message": (
@@ -2786,7 +2816,18 @@ class DatabaseToolService:
                 )
 
             if tool_name == "memory_delete":
-                if not _DELETE_REQUEST_PATTERN.search(user_message):
+                explicit_profile_delete = bool(
+                    re.fullmatch(
+                        r"/profile-delete\s+[a-z0-9_]+",
+                        user_message.strip(),
+                        flags=re.IGNORECASE,
+                    )
+                )
+
+                if (
+                    not _DELETE_REQUEST_PATTERN.search(user_message)
+                    and not explicit_profile_delete
+                ):
                     return {
                         "status": "denied",
                         "message": (

@@ -449,7 +449,16 @@ class _TrackedConnection:
 class LearningStore:
     """PostgreSQL source of truth for behavior guidance and reviewed feedback."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        initialize: bool = True,
+    ) -> None:
+        if not isinstance(initialize, bool):
+            raise TypeError(
+                "initialize must be boolean."
+            )
+
         self._operation_id: ContextVar[str | None] = ContextVar(
             "zara_learning_store_operation_id",
             default=None,
@@ -459,7 +468,9 @@ class LearningStore:
         self._active_connections_lock = Lock()
 
         self.embedding_client = EmbeddingClient()
-        self._initialize()
+
+        if initialize:
+            self._initialize()
 
     def begin_operation(self, operation_id: str) -> None:
         """Register a unique request before it can access PostgreSQL."""
@@ -1097,6 +1108,39 @@ class LearningStore:
                 ADD COLUMN IF NOT EXISTS page_count INTEGER
             """)
 
+            # R7: auditable deletion, retention and integrity lifecycle.
+
+            connection.execute("""
+                ALTER TABLE documents
+                ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ
+            """)
+
+            connection.execute("""
+                ALTER TABLE documents
+                ADD COLUMN IF NOT EXISTS deleted_by TEXT
+            """)
+
+            connection.execute("""
+                ALTER TABLE documents
+                ADD COLUMN IF NOT EXISTS retention_until TIMESTAMPTZ
+            """)
+
+            connection.execute("""
+                ALTER TABLE documents
+                ADD COLUMN IF NOT EXISTS purged_at TIMESTAMPTZ
+            """)
+
+            connection.execute("""
+                ALTER TABLE documents
+                ADD COLUMN IF NOT EXISTS integrity_status TEXT
+                    NOT NULL DEFAULT 'unchecked'
+            """)
+
+            connection.execute("""
+                ALTER TABLE documents
+                ADD COLUMN IF NOT EXISTS last_integrity_check_at
+                    TIMESTAMPTZ
+            """)
 
             # content_sha256 identifies content, not source identity.
             # Remove the previous global uniqueness constraint.
@@ -1198,6 +1242,41 @@ class LearningStore:
                 ON documents(source_key, ingestion_status)
             """)
 
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_documents_retention_due
+                ON documents(retention_until, id)
+                WHERE ingestion_status = 'deleted'
+            """)
+
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_documents_integrity_status
+                ON documents(integrity_status, id)
+                WHERE ingestion_status IN (
+                    'ready',
+                    'archived',
+                    'superseded'
+                )
+            """)
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_documents_retention_due
+                ON documents(retention_until, id)
+                WHERE ingestion_status = 'deleted'
+            """)
+
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_documents_integrity_status
+                ON documents(integrity_status, id)
+                WHERE ingestion_status IN (
+                    'ready',
+                    'archived',
+                    'superseded'
+                )
+            """)
+            
             # R1: auditable document lifecycle.
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS document_ingestion_events (
@@ -1224,6 +1303,15 @@ class LearningStore:
                     idx_document_ingestion_events_document
                 ON document_ingestion_events(
                     document_id,
+                    created_at DESC
+                )
+            """)
+
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_document_ingestion_events_type
+                ON document_ingestion_events(
+                    event_type,
                     created_at DESC
                 )
             """)
@@ -1758,6 +1846,58 @@ class LearningStore:
                         WITH (lists = 100)
                         WHERE embedding IS NOT NULL
                     """)
+            # R5: native PostgreSQL full-text search indexes.
+            # The expressions must match keyword_search() exactly.
+
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS idx_behavior_guides_fts
+                ON behavior_guides
+                USING GIN (
+                    to_tsvector(
+                        'simple',
+                        COALESCE(title, '') || ' ' ||
+                        COALESCE(keywords, '') || ' ' ||
+                        COALESCE(category, '') || ' ' ||
+                        COALESCE(content, '')
+                    )
+                )
+            """)
+
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS idx_feedback_lessons_fts
+                ON feedback_lessons
+                USING GIN (
+                    to_tsvector(
+                        'simple',
+                        COALESCE(category, '') || ' ' ||
+                        COALESCE(lesson_text, '')
+                    )
+                )
+            """)
+
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS idx_document_chunks_fts
+                ON document_chunks
+                USING GIN (
+                    to_tsvector(
+                        'simple',
+                        COALESCE(content, '') || ' ' ||
+                        COALESCE(section, '')
+                    )
+                )
+            """)
+
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS idx_documents_fts
+                ON documents
+                USING GIN (
+                    to_tsvector(
+                        'simple',
+                        COALESCE(file_name, '') || ' ' ||
+                        COALESCE(category, '')
+                    )
+                )
+            """)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_user_memory_active
@@ -2900,6 +3040,363 @@ class LearningStore:
 
         return result.rowcount
 
+    def keyword_search(
+        self,
+        query: str,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """
+        Search approved knowledge using PostgreSQL full-text search.
+
+        Results are bounded per source so one large document collection
+        cannot completely crowd out behavioral guidance.
+
+        This is a lexical retrieval channel, independent of embeddings.
+        """
+        query = str(query or "").strip()[:500]
+
+        if not query:
+            return []
+
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Keyword retrieval limit must be an integer."
+            ) from exc
+
+        limit = max(1, min(limit, 30))
+
+        branches: list[str] = []
+
+        branches.append("""
+            SELECT
+                'behavior_guide'::text AS source,
+                bg.id::bigint AS source_id,
+                NULL::bigint AS source_parent_id,
+                bg.guide_key::text AS source_key,
+                NULL::text AS rule_id,
+                NULL::text AS scope,
+                0::integer AS priority,
+                bg.version::integer AS version,
+                bg.category::text AS category,
+                bg.title::text AS title,
+                bg.content::text AS content,
+                NULL::text AS source_file,
+                NULL::text AS source_path,
+                0::integer AS source_version,
+                NULL::integer AS page_number,
+                NULL::text AS section,
+                NULL::integer AS chunk_index,
+                COALESCE(bg.embedding_text_hash, '')::text
+                    AS content_sha256,
+
+                EXTRACT(
+                    EPOCH FROM COALESCE(bg.updated_at, bg.created_at)
+                )::double precision AS updated_at_epoch,
+
+                ts_rank_cd(
+                    to_tsvector(
+                        'simple',
+                        COALESCE(bg.title, '') || ' ' ||
+                        COALESCE(bg.keywords, '') || ' ' ||
+                        COALESCE(bg.category, '') || ' ' ||
+                        COALESCE(bg.content, '')
+                    ),
+                    q.tsquery
+                )::double precision AS keyword_score,
+
+                NULL::jsonb AS metadata,
+                NULL::text AS extraction_method,
+                NULL::text AS extraction_status,
+                NULL::jsonb AS extraction_warnings,
+                NULL::jsonb AS extraction_metadata,
+                NULL::text AS source_encoding,
+                NULL::integer AS page_count,
+                0.0::double precision AS similarity
+
+            FROM behavior_guides AS bg
+            CROSS JOIN search_query AS q
+
+            WHERE bg.approved = TRUE
+                AND numnode(q.tsquery) > 0
+                AND to_tsvector(
+                    'simple',
+                    COALESCE(bg.title, '') || ' ' ||
+                    COALESCE(bg.keywords, '') || ' ' ||
+                    COALESCE(bg.category, '') || ' ' ||
+                    COALESCE(bg.content, '')
+                ) @@ q.tsquery
+
+            ORDER BY
+                keyword_score DESC,
+                bg.updated_at DESC,
+                bg.id DESC
+
+            LIMIT %s
+        """)
+
+        branches.append("""
+            SELECT
+                'feedback_lesson'::text AS source,
+                fl.id::bigint AS source_id,
+                fl.feedback_id::bigint AS source_parent_id,
+                fl.category::text AS source_key,
+                NULL::text AS rule_id,
+                NULL::text AS scope,
+                0::integer AS priority,
+                0::integer AS version,
+                fl.category::text AS category,
+                'Reviewed behavior lesson'::text AS title,
+                fl.lesson_text::text AS content,
+                NULL::text AS source_file,
+                NULL::text AS source_path,
+                0::integer AS source_version,
+                NULL::integer AS page_number,
+                NULL::text AS section,
+                NULL::integer AS chunk_index,
+                COALESCE(fl.embedding_text_hash, '')::text
+                    AS content_sha256,
+
+                EXTRACT(
+                    EPOCH FROM COALESCE(fl.updated_at, fl.created_at)
+                )::double precision AS updated_at_epoch,
+
+                ts_rank_cd(
+                    to_tsvector(
+                        'simple',
+                        COALESCE(fl.category, '') || ' ' ||
+                        COALESCE(fl.lesson_text, '')
+                    ),
+                    q.tsquery
+                )::double precision AS keyword_score,
+
+                NULL::jsonb AS metadata,
+                NULL::text AS extraction_method,
+                NULL::text AS extraction_status,
+                NULL::jsonb AS extraction_warnings,
+                NULL::jsonb AS extraction_metadata,
+                NULL::text AS source_encoding,
+                NULL::integer AS page_count,
+                0.0::double precision AS similarity
+
+            FROM feedback_lessons AS fl
+            CROSS JOIN search_query AS q
+
+            WHERE fl.approved = TRUE
+                AND numnode(q.tsquery) > 0
+                AND to_tsvector(
+                    'simple',
+                    COALESCE(fl.category, '') || ' ' ||
+                    COALESCE(fl.lesson_text, '')
+                ) @@ q.tsquery
+
+            ORDER BY
+                keyword_score DESC,
+                fl.updated_at DESC,
+                fl.id DESC
+
+            LIMIT %s
+        """)
+
+        if getattr(
+            self,
+            "_system_a_promotion_schema_ready",
+            False,
+        ):
+            branches.append("""
+                SELECT
+                    'system_a_lesson'::text AS source,
+                    pl.id::bigint AS source_id,
+                    pl.candidate_id::bigint AS source_parent_id,
+                    pl.rule_key::text AS source_key,
+                    pl.rule_key::text AS rule_id,
+                    pl.scope::text AS scope,
+                    pl.priority::integer AS priority,
+                    pl.version::integer AS version,
+                    pl.category::text AS category,
+                    'Approved System A lesson'::text AS title,
+                    pl.lesson_text::text AS content,
+                    NULL::text AS source_file,
+                    NULL::text AS source_path,
+                    0::integer AS source_version,
+                    NULL::integer AS page_number,
+                    NULL::text AS section,
+                    NULL::integer AS chunk_index,
+                    COALESCE(pl.embedding_text_hash, '')::text
+                        AS content_sha256,
+
+                    EXTRACT(
+                        EPOCH FROM COALESCE(pl.updated_at, pl.created_at)
+                    )::double precision AS updated_at_epoch,
+
+                    ts_rank_cd(
+                        to_tsvector(
+                            'simple',
+                            COALESCE(pl.rule_key, '') || ' ' ||
+                            COALESCE(pl.category, '') || ' ' ||
+                            COALESCE(pl.scope, '') || ' ' ||
+                            COALESCE(pl.lesson_text, '')
+                        ),
+                        q.tsquery
+                    )::double precision AS keyword_score,
+
+                    NULL::jsonb AS metadata,
+                    NULL::text AS extraction_method,
+                    NULL::text AS extraction_status,
+                    NULL::jsonb AS extraction_warnings,
+                    NULL::jsonb AS extraction_metadata,
+                    NULL::text AS source_encoding,
+                    NULL::integer AS page_count,
+                    0.0::double precision AS similarity
+
+                FROM zara_production_lessons AS pl
+                CROSS JOIN search_query AS q
+
+                WHERE pl.active = TRUE
+                    AND numnode(q.tsquery) > 0
+                    AND to_tsvector(
+                        'simple',
+                        COALESCE(pl.rule_key, '') || ' ' ||
+                        COALESCE(pl.category, '') || ' ' ||
+                        COALESCE(pl.scope, '') || ' ' ||
+                        COALESCE(pl.lesson_text, '')
+                    ) @@ q.tsquery
+
+                ORDER BY
+                    keyword_score DESC,
+                    pl.updated_at DESC,
+                    pl.id DESC
+
+                LIMIT %s
+            """)
+
+        branches.append("""
+            SELECT
+                'document_chunk'::text AS source,
+                dc.id::bigint AS source_id,
+                dc.document_id::bigint AS source_parent_id,
+                d.source_key::text AS source_key,
+                NULL::text AS rule_id,
+                NULL::text AS scope,
+                0::integer AS priority,
+                0::integer AS version,
+                d.category::text AS category,
+                d.file_name::text AS title,
+                dc.content::text AS content,
+                d.file_name::text AS source_file,
+                d.source_path::text AS source_path,
+                d.source_version::integer AS source_version,
+                dc.page_number::integer AS page_number,
+                dc.section::text AS section,
+                dc.chunk_index::integer AS chunk_index,
+                COALESCE(dc.embedding_text_hash, '')::text
+                    AS content_sha256,
+
+                EXTRACT(
+                    EPOCH FROM d.updated_at
+                )::double precision AS updated_at_epoch,
+
+                (
+                    ts_rank_cd(
+                        to_tsvector(
+                            'simple',
+                            COALESCE(dc.content, '') || ' ' ||
+                            COALESCE(dc.section, '')
+                        ),
+                        q.tsquery
+                    )
+                    +
+                    0.25 * ts_rank_cd(
+                        to_tsvector(
+                            'simple',
+                            COALESCE(d.file_name, '') || ' ' ||
+                            COALESCE(d.category, '')
+                        ),
+                        q.tsquery
+                    )
+                )::double precision AS keyword_score,
+
+                dc.metadata,
+                d.extraction_method,
+                d.extraction_status,
+                d.extraction_warnings,
+                d.extraction_metadata,
+                d.source_encoding,
+                d.page_count,
+                0.0::double precision AS similarity
+
+            FROM document_chunks AS dc
+
+            JOIN documents AS d
+                ON d.id = dc.document_id
+
+            CROSS JOIN search_query AS q
+
+            WHERE d.ingestion_status = 'ready'
+                AND numnode(q.tsquery) > 0
+                AND (
+                    to_tsvector(
+                        'simple',
+                        COALESCE(dc.content, '') || ' ' ||
+                        COALESCE(dc.section, '')
+                    ) @@ q.tsquery
+
+                    OR
+
+                    to_tsvector(
+                        'simple',
+                        COALESCE(d.file_name, '') || ' ' ||
+                        COALESCE(d.category, '')
+                    ) @@ q.tsquery
+                )
+
+            ORDER BY
+                keyword_score DESC,
+                d.updated_at DESC,
+                dc.id DESC
+
+            LIMIT %s
+        """)
+
+        sql = (
+            """
+            WITH search_query AS (
+                SELECT websearch_to_tsquery(
+                    'simple',
+                    %s
+                ) AS tsquery
+            ),
+            candidates AS (
+            """
+            + "\nUNION ALL\n".join(branches)
+            + """
+            )
+            SELECT *
+            FROM candidates
+            ORDER BY
+                keyword_score DESC,
+                updated_at_epoch DESC,
+                source ASC,
+                source_id DESC
+            LIMIT %s
+            """
+        )
+
+        params = (
+            [query]
+            + [limit] * len(branches)
+            + [limit * len(branches)]
+        )
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                sql,
+                tuple(params),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+    
     def semantic_search(
         self,
         query: str,
@@ -2920,9 +3417,6 @@ class LearningStore:
         vector = _vector_literal(
             embedding_client.embed_query(query)
         )
-        vector = _vector_literal(
-            self.embedding_client.embed_query(query)
-        )
 
         with self._connect() as connection:
             guide_rows = connection.execute(
@@ -2935,20 +3429,17 @@ class LearningStore:
                     bg.category,
                     bg.title,
                     bg.content,
+                    EXTRACT(
+                        EPOCH FROM bg.updated_at
+                    )::double precision AS updated_at_epoch,                    
                     1 - (bg.embedding <=> %s::vector) AS similarity
                 FROM behavior_guides AS bg
                 WHERE bg.approved = TRUE
                     AND bg.embedding IS NOT NULL
                     AND bg.embedding_model = %s
-                    AND (
-                        alias.embedding_model_version = %s
-                        OR (
-                            %s = 'unverified'
-                            AND alias.embedding_model_version = 'legacy-unverified'
-                        )
-                    )
-                    AND alias.embedding_dimensions = %s
-                    AND alias.embedding_format_version = %s
+                    AND bg.embedding_model_version = %s
+                    AND bg.embedding_dimensions = %s
+                    AND bg.embedding_format_version = %s
                 ORDER BY bg.embedding <=> %s::vector
                 LIMIT %s
                 """,
@@ -2956,12 +3447,11 @@ class LearningStore:
                     vector,
                     model,
                     model_version,
-                    model_version,
                     dimensions,
                     format_version,
                     vector,
                     limit,
-                ),
+                ),  
             ).fetchall()
 
             lesson_rows = connection.execute(
@@ -2973,27 +3463,23 @@ class LearningStore:
                     fl.category,
                     'Reviewed behavior lesson' AS title,
                     fl.lesson_text AS content,
+                    EXTRACT(
+                        EPOCH FROM fl.updated_at
+                    )::double precision AS updated_at_epoch,
                     1 - (fl.embedding <=> %s::vector) AS similarity
                 FROM feedback_lessons AS fl
                 WHERE fl.approved = TRUE
                     AND fl.embedding IS NOT NULL
                     AND fl.embedding_model = %s
-                    AND (
-                        alias.embedding_model_version = %s
-                        OR (
-                            %s = 'unverified'
-                            AND alias.embedding_model_version = 'legacy-unverified'
-                        )
-                    )
-                    AND alias.embedding_dimensions = %s
-                    AND alias.embedding_format_version = %s
+                    AND fl.embedding_model_version = %s
+                    AND fl.embedding_dimensions = %s
+                    AND fl.embedding_format_version = %s
                 ORDER BY fl.embedding <=> %s::vector
                 LIMIT %s
                 """,
                 (
                     vector,
                     model,
-                    model_version,
                     model_version,
                     dimensions,
                     format_version,
@@ -3027,6 +3513,10 @@ class LearningStore:
                         'Approved System A lesson' AS title,
                         pl.lesson_text AS content,
 
+                        EXTRACT(
+                            EPOCH FROM pl.updated_at
+                        )::double precision AS updated_at_epoch,
+
                         1 - (
                             pl.embedding <=> %s::vector
                         ) AS similarity
@@ -3036,27 +3526,22 @@ class LearningStore:
                     WHERE pl.active = TRUE
                         AND pl.embedding IS NOT NULL
                         AND pl.embedding_model = %s
-                    AND (
-                        alias.embedding_model_version = %s
-                        OR (
-                            %s = 'unverified'
-                            AND alias.embedding_model_version = 'legacy-unverified'
-                        )
-                    )
-                    AND alias.embedding_dimensions = %s
-                    AND alias.embedding_format_version = %s
+                        AND pl.embedding_model_version = %s
+                        AND pl.embedding_dimensions = %s
+                        AND pl.embedding_format_version = %s
                     ORDER BY pl.embedding <=> %s::vector
                     LIMIT %s
-                """, (
-                    vector,
-                    model,
-                    model_version,
-                    model_version,
-                    dimensions,
-                    format_version,
-                    vector,
-                    limit,
-                )).fetchall()
+                """, 
+                    (
+                        vector,
+                        model,
+                        model_version,
+                        dimensions,
+                        format_version,
+                        vector,
+                        limit,
+                    ),
+                ).fetchall()
 
             document_rows = connection.execute(
                 """
@@ -3074,6 +3559,9 @@ class LearningStore:
                     d.source_key,
                     d.source_version,
                     d.supersedes_document_id,
+                    EXTRACT(
+                        EPOCH FROM d.updated_at
+                    )::double precision AS updated_at_epoch,
                     d.content_sha256,
                     d.extracted_text_sha256,
                     d.extraction_method,
@@ -3098,11 +3586,22 @@ class LearningStore:
                 WHERE d.ingestion_status = 'ready'
                     AND dc.embedding IS NOT NULL
                     AND dc.embedding_model = %s
+                    AND dc.embedding_model_version = %s
+                    AND dc.embedding_dimensions = %s
+                    AND dc.embedding_format_version = %s
 
                 ORDER BY dc.embedding <=> %s::vector
                 LIMIT %s
                 """,
-                (vector, model, vector, limit),
+                (
+                    vector,
+                    model,
+                    model_version,
+                    dimensions,
+                    format_version,
+                    vector,
+                    limit,
+                ),
             ).fetchall()
 
         rows = [

@@ -39,18 +39,47 @@ if __name__ == "__main__":
 # Then confirmation:
 # AUTHORIZE ZARA SYSTEM A PROMOTION
 
-# Example commands, abhi execute nahi karne:
-# python scripts/system_a_eval_runner.py
 
+# app/
+#   ai/
+#     tools/
+#       existing files...
 
-# python scripts/system_a_eval_runner.py --with-model
+#   advanced_tools/
+#     contracts/
+#     registry/
+#     permissions/
+#     execution/
+#     routing/
+#     audit/
+#     implementations/
+#       system/
+#       desktop/
+#       browser/
+#       research/
+#       files/
+#       coding/
+#       memory/
+#       communication/
+#       media/
+#       data/
+#       robotics/
 
-
-# python scripts/system_a_eval_runner.py --db-audit
-
-
-# python scripts/system_a_eval_runner.py --with-model --db-audit
-
-
-# Purane evaluation se compare:
-# python scripts/system_a_eval_runner.py --with-model --db-audit --compare results/system_a_evaluations/previous.json
+# app/
+# └── ai/
+#     └── tools/
+#         ├── contracts.py
+#         ├── registry.py
+#         ├── permissions.py
+#         ├── confirmation.py
+#         ├── execution.py
+#         ├── router.py
+#         ├── audit.py
+#         ├── verification.py
+#         ├── database.py
+#         ├── acceptance.py
+#         └── system_control/
+#             ├── __init__.py
+#             ├── definitions.py
+#             ├── intent.py
+#             └── service.py

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Sequence
 from threading import Event, Lock, local
 
@@ -26,7 +27,11 @@ class EmbeddingClient:
     def __init__(self) -> None:
         self.base_url = settings.ollama_base_url.rstrip("/")
         self.model = settings.zara_embedding_model
-        self.model_version = settings.zara_embedding_model_version
+        self._configured_model_version = (
+            settings.zara_embedding_model_version.strip()
+        )
+        self._model_version_cache: str | None = None
+        self._model_version_lock = Lock()
         self.dimensions = settings.zara_embedding_dimensions
         self.format_version = self.FORMAT_VERSION
         self.timeout = settings.ollama_timeout_seconds
@@ -44,6 +49,130 @@ class EmbeddingClient:
 
         return session
 
+    @staticmethod
+    def _normalize_model_name(value: str) -> str:
+        """
+        Normalize Ollama model references.
+
+        A tagless name is equivalent to its :latest tag.
+        Namespace/model names are preserved.
+        """
+        normalized = str(value or "").strip()
+
+        if not normalized:
+            return ""
+
+        final_component = normalized.rsplit("/", 1)[-1]
+
+        if ":" not in final_component:
+            normalized = f"{normalized}:latest"
+
+        return normalized.casefold()
+
+    @property
+    def model_version(self) -> str:
+        """
+        Resolve an immutable embedding-model identity from Ollama.
+
+        The digest is cached for this client lifetime. Restart Zara after
+        replacing/updating the local embedding model.
+        """
+        with self._model_version_lock:
+            if self._model_version_cache:
+                return self._model_version_cache
+
+            response: requests.Response | None = None
+
+            try:
+                response = self.session.get(
+                    f"{self.base_url}/api/tags",
+                    timeout=(
+                        5.0,
+                        max(5.0, min(float(self.timeout), 15.0)),
+                    ),
+                )
+                response.raise_for_status()
+                payload = response.json()
+
+            except (
+                requests.exceptions.RequestException,
+                ValueError,
+            ) as exc:
+                raise EmbeddingError(
+                    "Could not resolve the local Ollama embedding "
+                    "model digest."
+                ) from exc
+
+            finally:
+                if response is not None:
+                    response.close()
+
+            models = (
+                payload.get("models")
+                if isinstance(payload, dict)
+                else None
+            )
+
+            if not isinstance(models, list):
+                raise EmbeddingError(
+                    "Ollama model-list response has an invalid structure."
+                )
+
+            expected_name = self._normalize_model_name(self.model)
+            matched_model: dict[str, object] | None = None
+
+            for model_row in models:
+                if not isinstance(model_row, dict):
+                    continue
+
+                candidates = (
+                    model_row.get("name"),
+                    model_row.get("model"),
+                )
+
+                if any(
+                    isinstance(candidate, str)
+                    and self._normalize_model_name(candidate)
+                    == expected_name
+                    for candidate in candidates
+                ):
+                    matched_model = model_row
+                    break
+
+            if matched_model is None:
+                raise EmbeddingError(
+                    "Configured embedding model is not installed "
+                    "in the connected Ollama instance."
+                )
+
+            digest = str(
+                matched_model.get("digest") or ""
+            ).strip().casefold()
+
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise EmbeddingError(
+                    "Ollama returned a missing or invalid model digest."
+                )
+
+            resolved_version = f"sha256:{digest}"
+
+            configured_version = (
+                self._configured_model_version.strip().casefold()
+            )
+
+            if configured_version not in {
+                "",
+                "unverified",
+                resolved_version,
+            }:
+                raise EmbeddingError(
+                    "Configured embedding model version does not match "
+                    "the installed Ollama model digest."
+                )
+
+            self._model_version_cache = resolved_version
+            return resolved_version
+        
     @staticmethod
     def format_document(title: str, content: str) -> str:
         """Format a document using EmbeddingGemma's retrieval convention."""

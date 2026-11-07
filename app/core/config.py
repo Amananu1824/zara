@@ -84,6 +84,16 @@ class Settings:
     api_host: str = os.getenv("ZARA_API_HOST", "127.0.0.1")
     api_port: int = _int_env("ZARA_API_PORT", 8000)
 
+    api_allow_system_control_tools: bool = _bool_env(
+        "ZARA_API_ALLOW_SYSTEM_CONTROL_TOOLS",
+        False,
+    )
+
+    api_allow_system_control_mutations: bool = _bool_env(
+        "ZARA_API_ALLOW_SYSTEM_CONTROL_MUTATIONS",
+        False,
+    )
+    
     # PostgreSQL
     zara_database_host: str = os.getenv(
         "ZARA_DATABASE_HOST",

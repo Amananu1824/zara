@@ -38,6 +38,9 @@ class ChatResponse(BaseModel):
     display_events: list[dict[str, Any]] = Field(
         default_factory=list
     )
+    action_trace: list[dict[str, Any]] = Field(
+        default_factory=list
+    )
 
 class ResetRequest(BaseModel):
     session_id: str = Field(default="default", min_length=1, max_length=100)
@@ -69,6 +72,8 @@ def _get_engine(session_id: str) -> ChatEngine:
                 allow_database_mutations=(
                     settings.api_allow_database_mutations
                 ),
+                action_interface="api",
+                action_session_id=session_id,
             )
             _sessions[session_id] = engine
 
@@ -95,6 +100,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             system_results=result["system_results"],
             trace_id=result["trace_id"],
             display_events=result["display_events"],
+            action_trace=result["action_trace"],
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -209,6 +215,7 @@ def chat_stream(request: ChatRequest):
                     "assistant_message": assistant_message,
                     "system_results": list(engine.last_task_results),
                     "tool_trace": list(engine.last_database_tool_trace),
+                    "action_trace": list(engine.last_action_trace),
                     "metrics": dict(engine.last_turn_metrics),
                     "trace_id": engine.last_improvement_trace_id,
                 },
@@ -234,6 +241,7 @@ def chat_stream(request: ChatRequest):
                     "turn_committed": False,
                     "system_results": list(engine.last_task_results),
                     "tool_trace": list(engine.last_database_tool_trace),
+                    "action_trace": list(engine.last_action_trace),
                 },
             )
 
@@ -250,6 +258,7 @@ def chat_stream(request: ChatRequest):
                     "turn_committed": False,
                     "system_results": list(engine.last_task_results),
                     "tool_trace": list(engine.last_database_tool_trace),
+                    "action_trace": list(engine.last_action_trace),
                 },
             )
 

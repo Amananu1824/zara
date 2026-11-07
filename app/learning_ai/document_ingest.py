@@ -26,6 +26,8 @@ from app.learning_ai.learning_store import LearningStore, _vector_literal
 
 MAX_FILE_BYTES = 15 * 1024 * 1024
 MAX_DOCUMENT_CHUNKS = 500
+DOCUMENT_TRASH_RETENTION_DAYS = 30
+MAX_DOCUMENT_PURGE_BATCH = 100
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 160
 EMBEDDING_BATCH_SIZE = 8
@@ -1618,8 +1620,71 @@ def _attach_stable_chunk_ids(
 class DocumentIngestor:
     """Extract, chunk, embed, and persist reference documents."""
 
-    def __init__(self, store: LearningStore) -> None:
+    def __init__(
+        self,
+        store: LearningStore,
+        *,
+        allow_mutations: bool = False,
+    ) -> None:
         self.store = store
+        self.allow_mutations = bool(allow_mutations)
+
+    def _require_mutation_permission(self) -> None:
+        if not self.allow_mutations:
+            raise PermissionError(
+                "Document mutation is not authorized "
+                "for this application context."
+            )
+
+    @staticmethod
+    def _validate_document_id(
+        document_id: int,
+    ) -> int | None:
+        if isinstance(document_id, bool):
+            return None
+
+        try:
+            value = int(document_id)
+        except (TypeError, ValueError):
+            return None
+
+        if value <= 0:
+            return None
+
+        return value
+
+    @staticmethod
+    def _normalize_actor(actor: str) -> str:
+        actor = re.sub(
+            r"[^a-zA-Z0-9_.:@-]",
+            "_",
+            str(actor or "local_owner").strip(),
+        )
+
+        return actor[:100] or "local_owner"
+
+    def _acquire_document_source_lock(
+        self,
+        connection: Any,
+        source_key: str,
+        document_id: int,
+    ) -> None:
+        lock_key = (
+            source_key
+            if source_key
+            else f"legacy-document:{document_id}"
+        )
+
+        connection.execute(
+            """
+            SELECT pg_advisory_xact_lock(
+                hashtext(%s)::bigint
+            )
+            """,
+            (
+                f"zara-document-source:{lock_key}",
+            ),
+        )
 
     @staticmethod
     def _current_index_is_complete(
@@ -1738,6 +1803,8 @@ class DocumentIngestor:
         force: bool = False,
     ) -> dict[str, Any]:
         """Ingest one local document as an immutable source version."""
+
+        self._require_mutation_permission()
 
         path = Path(file_path).expanduser().resolve()
 
@@ -2256,7 +2323,7 @@ class DocumentIngestor:
                         section,
                         metadata,
                         embedding,
-                        embedding_model
+                        embedding_model,
                         embedding_model_version,
                         embedding_dimensions,
                         embedding_format_version,
@@ -2379,27 +2446,28 @@ class DocumentIngestor:
             rows = connection.execute("""
                 SELECT
                     d.id,
-                    d.source_path,
-                    d.source_key,
+                    NULL::text AS source_path,
                     d.source_version,
                     d.supersedes_document_id,
                     d.duplicate_of_document_id,
                     d.file_name,
-                    d.content_sha256,
-                    d.extracted_text_sha256,
                     d.file_size_bytes,
                     d.media_type,
-                    d.extraction_method,
                     d.extraction_status,
                     d.extraction_warnings,
                     d.extraction_metadata,
-                    d.source_encoding,
                     d.page_count,
                     d.category,
                     d.language,
                     d.ingestion_status,
                     d.created_at,
                     d.updated_at,
+                    d.deleted_at,
+                    d.deleted_by,
+                    d.retention_until,
+                    d.purged_at,
+                    d.integrity_status,
+                    d.last_integrity_check_at,
                     (
                         d.ingestion_status = 'superseded'
                     ) AS superseded_version,
@@ -2419,6 +2487,8 @@ class DocumentIngestor:
     def archive_document(
         self,
         document_id: int,
+        *,
+        actor: str = "local_owner",
     ) -> dict[str, Any]:
 
         if isinstance(document_id, bool):
@@ -2441,8 +2511,10 @@ class DocumentIngestor:
                 "reason": "invalid_document_id",
             }
 
-        with self.store._connect() as connection:
+        self._require_mutation_permission()
+        actor = self._normalize_actor(actor)
 
+        with self.store._connect() as connection:
             identity = connection.execute("""
                 SELECT source_key
                 FROM documents
@@ -2503,17 +2575,20 @@ class DocumentIngestor:
                     document_id,
                     source_key,
                     event_type,
+                    actor,
                     details
                 )
                 VALUES (
                     %s,
                     %s,
                     'document_archived',
+                    %s,
                     %s::jsonb
                 )
             """, (
                 document_id,
                 source_key,
+                actor,
                 json.dumps({
                     "reason": "explicit_archive_operation",
                 }),
@@ -2527,27 +2602,27 @@ class DocumentIngestor:
     def restore_document(
         self,
         document_id: int,
+        *,
+        actor: str = "local_owner",
     ) -> dict[str, Any]:
+        """
+        Restore an archived, superseded or non-expired deleted version.
 
-        if isinstance(document_id, bool):
+        Exactly one ready version can exist for a source key.
+        """
+
+        document_id = self._validate_document_id(
+            document_id
+        )
+
+        if document_id is None:
             return {
                 "status": "invalid",
                 "reason": "invalid_document_id",
             }
 
-        try:
-            document_id = int(document_id)
-        except (TypeError, ValueError):
-            return {
-                "status": "invalid",
-                "reason": "invalid_document_id",
-            }
-
-        if document_id <= 0:
-            return {
-                "status": "invalid",
-                "reason": "invalid_document_id",
-            }
+        actor = self._normalize_actor(actor)
+        self._require_mutation_permission()
 
         with self.store._connect() as connection:
 
@@ -2565,12 +2640,14 @@ class DocumentIngestor:
                     "document_id": document_id,
                 }
 
-            source_key = str(identity["source_key"] or "")
-            lock_key = source_key or f"legacy-document:{document_id}"
+            source_key = str(
+                identity["source_key"] or ""
+            )
 
-            connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
-                (f"zara-document-source:{lock_key}",),
+            self._acquire_document_source_lock(
+                connection,
+                source_key,
+                document_id,
             )
 
             target = connection.execute("""
@@ -2578,7 +2655,12 @@ class DocumentIngestor:
                     id,
                     source_key,
                     source_version,
-                    ingestion_status
+                    ingestion_status,
+                    retention_until,
+                    (
+                        retention_until IS NOT NULL
+                        AND retention_until <= NOW()
+                    ) AS retention_expired
                 FROM documents
                 WHERE id = %s
                 FOR UPDATE
@@ -2586,33 +2668,67 @@ class DocumentIngestor:
                 document_id,
             )).fetchone()
 
-            if target["ingestion_status"] == "ready":
+            if target is None:
+                return {
+                    "status": "not_found",
+                    "document_id": document_id,
+                }
+
+            current_status = str(
+                target["ingestion_status"]
+            )
+
+            if current_status == "ready":
                 return {
                     "status": "unchanged",
                     "reason": "document_already_active",
                     "document_id": document_id,
                 }
 
-            if target["ingestion_status"] not in {
-                "superseded",
+            if current_status == "purged":
+                return {
+                    "status": "blocked",
+                    "reason": "permanently_purged",
+                    "document_id": document_id,
+                }
+
+            if current_status == "deleted":
+                if (
+                    target["retention_expired"]
+                    or target["retention_until"] is None
+                ):
+                    return {
+                        "status": "blocked",
+                        "reason": "retention_expired",
+                        "document_id": document_id,
+                    }
+
+            elif current_status not in {
                 "archived",
+                "superseded",
             }:
                 return {
                     "status": "blocked",
                     "reason": "document_version_not_restorable",
+                    "document_id": document_id,
                 }
 
-            previous = connection.execute("""
-                SELECT id
-                FROM documents
-                WHERE source_key = %s
-                  AND ingestion_status = 'ready'
-                  AND id <> %s
-                FOR UPDATE
-            """, (
-                source_key,
-                document_id,
-            )).fetchone() if source_key else None
+            previous = None
+
+            if source_key:
+                previous = connection.execute("""
+                    SELECT id
+                    FROM documents
+                    WHERE source_key = %s
+                      AND ingestion_status = 'ready'
+                      AND id <> %s
+                    ORDER BY source_version DESC
+                    LIMIT 1
+                    FOR UPDATE
+                """, (
+                    source_key,
+                    document_id,
+                )).fetchone()
 
             previous_document_id = (
                 int(previous["id"])
@@ -2625,8 +2741,7 @@ class DocumentIngestor:
                 connection.execute("""
                     UPDATE documents
                     SET
-                        ingestion_status = 'superseded',
-                        updated_at = NOW()
+                        ingestion_status = 'superseded'
                     WHERE id = %s
                       AND ingestion_status = 'ready'
                 """, (
@@ -2639,6 +2754,7 @@ class DocumentIngestor:
                         previous_document_id,
                         source_key,
                         event_type,
+                        actor,
                         details
                     )
                     VALUES (
@@ -2646,27 +2762,42 @@ class DocumentIngestor:
                         %s,
                         %s,
                         'document_superseded',
+                        %s,
                         %s::jsonb
                     )
                 """, (
                     previous_document_id,
                     document_id,
                     source_key,
+                    actor,
                     json.dumps({
-                        "reason": "older_version_restored",
+                        "reason": "another_version_restored",
+                        "restored_document_id": document_id,
                     }),
                 ))
 
-            connection.execute("""
+            restored = connection.execute("""
                 UPDATE documents
                 SET
                     ingestion_status = 'ready',
-                    updated_at = NOW()
+                    deleted_at = NULL,
+                    deleted_by = NULL,
+                    retention_until = NULL,
+                    integrity_status = 'unchecked'
                 WHERE id = %s
-                  AND ingestion_status IN ('superseded', 'archived')
+                  AND ingestion_status = %s
+                RETURNING id
             """, (
                 document_id,
-            ))
+                current_status,
+            )).fetchone()
+
+            if restored is None:
+                return {
+                    "status": "conflict",
+                    "reason": "restore_state_changed",
+                    "document_id": document_id,
+                }
 
             connection.execute("""
                 INSERT INTO document_ingestion_events (
@@ -2674,6 +2805,7 @@ class DocumentIngestor:
                     previous_document_id,
                     source_key,
                     event_type,
+                    actor,
                     details
                 )
                 VALUES (
@@ -2681,21 +2813,28 @@ class DocumentIngestor:
                     %s,
                     %s,
                     'document_restored',
+                    %s,
                     %s::jsonb
                 )
             """, (
                 document_id,
                 previous_document_id,
                 source_key,
+                actor,
                 json.dumps({
-                    "restored_version": int(target["source_version"]),
+                    "restored_version": int(
+                        target["source_version"]
+                    ),
+                    "previous_status": current_status,
                 }),
             ))
 
         return {
             "status": "restored",
             "document_id": document_id,
-            "source_version": int(target["source_version"]),
+            "source_version": int(
+                target["source_version"]
+            ),
             "previous_document_id": previous_document_id,
         }
 
@@ -2738,3 +2877,1194 @@ class DocumentIngestor:
             )).fetchall()
 
         return [dict(row) for row in rows]
+
+    def delete_document(
+        self,
+        document_id: int,
+        *,
+        confirmed: bool = False,
+        expected_source_version: int | None = None,
+        retention_days: int = DOCUMENT_TRASH_RETENTION_DAYS,
+        actor: str = "local_owner",
+    ) -> dict[str, Any]:
+        """
+        Soft-delete a document.
+
+        First call returns needs_confirmation.
+        Second call with confirmed=True performs the deletion.
+
+        The content remains recoverable during the retention window.
+        """
+
+        document_id = self._validate_document_id(
+            document_id
+        )
+
+        if document_id is None:
+            return {
+                "status": "invalid",
+                "reason": "invalid_document_id",
+            }
+
+        if not isinstance(confirmed, bool):
+            return {
+                "status": "invalid",
+                "reason": "invalid_confirmation",
+            }
+
+        try:
+            retention_days = int(retention_days)
+        except (TypeError, ValueError):
+            return {
+                "status": "invalid",
+                "reason": "invalid_retention_days",
+            }
+
+        if not 1 <= retention_days <= 3650:
+            return {
+                "status": "invalid",
+                "reason": "retention_days_out_of_range",
+            }
+
+        actor = self._normalize_actor(actor)
+
+        if confirmed:
+            try:
+                expected_source_version = int(
+                    expected_source_version
+                )
+            except (TypeError, ValueError):
+                return {
+                    "status": "invalid",
+                    "reason": "expected_source_version_required",
+                    "data_deleted": False,
+                }
+
+        if not confirmed:
+            with self.store._connect() as connection:
+                row = connection.execute("""
+                    SELECT
+                        id,
+                        file_name,
+                        source_version,
+                        ingestion_status
+                    FROM documents
+                    WHERE id = %s
+                """, (
+                    document_id,
+                )).fetchone()
+
+            if row is None:
+                return {
+                    "status": "not_found",
+                    "document_id": document_id,
+                }
+
+            if row["ingestion_status"] in {
+                "deleted",
+                "purged",
+            }:
+                return {
+                    "status": "unchanged",
+                    "reason": row["ingestion_status"],
+                    "document_id": document_id,
+                }
+
+            return {
+                "status": "needs_confirmation",
+                "action": "document_delete",
+                "document_id": document_id,
+                "file_name": row["file_name"],
+                "source_version": row["source_version"],
+                "retention_days": retention_days,
+                "confirmation_action": (
+                    f"/document-delete-confirm "
+                    f"{document_id} "
+                    f"{row['source_version']}"
+                ),
+                "data_deleted": False,
+            }
+
+        self._require_mutation_permission()
+
+        with self.store._connect() as connection:
+
+            identity = connection.execute("""
+                SELECT source_key
+                FROM documents
+                WHERE id = %s
+            """, (
+                document_id,
+            )).fetchone()
+
+            if identity is None:
+                return {
+                    "status": "not_found",
+                    "document_id": document_id,
+                }
+
+            source_key = str(
+                identity["source_key"] or ""
+            )
+
+            self._acquire_document_source_lock(
+                connection,
+                source_key,
+                document_id,
+            )
+
+            row = connection.execute("""
+                SELECT
+                    id,
+                    source_key,
+                    file_name,
+                    source_version,
+                    ingestion_status
+                FROM documents
+                WHERE id = %s
+                FOR UPDATE
+            """, (
+                document_id,
+            )).fetchone()
+
+            if row is None:
+                return {
+                    "status": "not_found",
+                    "document_id": document_id,
+                }
+
+            status = str(row["ingestion_status"])
+
+            if (
+                int(row["source_version"])
+                != expected_source_version
+            ):
+                return {
+                    "status": "conflict",
+                    "reason": "document_version_changed_since_preview",
+                    "document_id": document_id,
+                    "data_deleted": False,
+                }
+            
+            if status == "deleted":
+                return {
+                    "status": "unchanged",
+                    "reason": "already_deleted",
+                    "document_id": document_id,
+                }
+
+            if status == "purged":
+                return {
+                    "status": "blocked",
+                    "reason": "document_already_purged",
+                    "document_id": document_id,
+                }
+
+            if status not in {
+                "ready",
+                "archived",
+                "superseded",
+            }:
+                return {
+                    "status": "blocked",
+                    "reason": "document_state_not_deletable",
+                    "document_id": document_id,
+                }
+
+            deleted = connection.execute("""
+                UPDATE documents
+                SET
+                    ingestion_status = 'deleted',
+                    deleted_at = NOW(),
+                    deleted_by = %s,
+                    retention_until = (
+                        NOW() + make_interval(days => %s)
+                    ),
+                    integrity_status = 'unchecked'
+                WHERE id = %s
+                  AND ingestion_status = %s
+                RETURNING retention_until
+            """, (
+                actor,
+                retention_days,
+                document_id,
+                status,
+            )).fetchone()
+
+            if deleted is None:
+                return {
+                    "status": "conflict",
+                    "reason": "document_state_changed",
+                    "document_id": document_id,
+                }
+
+            connection.execute("""
+                INSERT INTO document_ingestion_events (
+                    document_id,
+                    source_key,
+                    event_type,
+                    actor,
+                    details
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'document_deleted',
+                    %s,
+                    %s::jsonb
+                )
+            """, (
+                document_id,
+                source_key,
+                actor,
+                json.dumps({
+                    "previous_status": status,
+                    "retention_days": retention_days,
+                    "soft_delete": True,
+                }),
+            ))
+
+        return {
+            "status": "deleted",
+            "document_id": document_id,
+            "retention_days": retention_days,
+            "retention_until": deleted["retention_until"],
+            "permanent_purge": False,
+        }
+
+    def preview_expired_document_purge(
+        self,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Read-only preview of documents eligible for permanent purge."""
+
+        try:
+            limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            return {
+                "status": "invalid",
+                "reason": "invalid_limit",
+            }
+
+        with self.store._connect() as connection:
+
+            summary = connection.execute("""
+                SELECT COUNT(*) AS eligible_count
+                FROM documents
+                WHERE ingestion_status = 'deleted'
+                  AND retention_until IS NOT NULL
+                  AND retention_until <= NOW()
+            """).fetchone()
+
+            rows = connection.execute("""
+                SELECT
+                    id,
+                    file_name,
+                    source_version,
+                    deleted_at,
+                    retention_until
+                FROM documents
+                WHERE ingestion_status = 'deleted'
+                  AND retention_until IS NOT NULL
+                  AND retention_until <= NOW()
+                ORDER BY retention_until ASC, id ASC
+                LIMIT %s
+            """, (
+                limit,
+            )).fetchall()
+
+        return {
+            "status": "preview",
+            "eligible_count": int(
+                summary["eligible_count"]
+            ),
+            "documents": [
+                dict(row)
+                for row in rows
+            ],
+            "permanent_deletion": True,
+            "confirmation_required": True,
+        }
+
+    def purge_expired_documents(
+        self,
+        *,
+        confirmed: bool = False,
+        batch_size: int = 25,
+        actor: str = "local_owner",
+    ) -> dict[str, Any]:
+        """
+        Permanently purge expired soft-deleted document content.
+
+        The parent document and event records remain as minimal tombstones
+        so historical foreign keys and audit trails remain valid.
+        """
+
+        if confirmed is not True:
+            return {
+                "status": "needs_confirmation",
+                "reason": "permanent_purge_requires_confirmation",
+                "preview": self.preview_expired_document_purge(),
+            }
+
+        self._require_mutation_permission()
+
+        try:
+            batch_size = max(
+                1,
+                min(int(batch_size), MAX_DOCUMENT_PURGE_BATCH),
+            )
+        except (TypeError, ValueError):
+            return {
+                "status": "invalid",
+                "reason": "invalid_batch_size",
+            }
+
+        actor = self._normalize_actor(actor)
+
+        purged: list[dict[str, Any]] = []
+        skipped = 0
+
+        with self.store._connect() as connection:
+
+            # Do not lock candidate rows before advisory locks.
+            # Ingestion uses advisory-lock -> row-lock ordering.
+            candidates = connection.execute("""
+                SELECT
+                    id,
+                    source_key
+                FROM documents
+                WHERE ingestion_status = 'deleted'
+                  AND retention_until IS NOT NULL
+                  AND retention_until <= NOW()
+                ORDER BY retention_until ASC, id ASC
+                LIMIT %s
+            """, (
+                batch_size,
+            )).fetchall()
+
+            for candidate in candidates:
+
+                document_id = int(candidate["id"])
+                source_key = str(
+                    candidate["source_key"] or ""
+                )
+
+                self._acquire_document_source_lock(
+                    connection,
+                    source_key,
+                    document_id,
+                )
+
+                row = connection.execute("""
+                    SELECT
+                        id,
+                        source_key,
+                        ingestion_status,
+                        retention_until
+                    FROM documents
+                    WHERE id = %s
+                    FOR UPDATE
+                """, (
+                    document_id,
+                )).fetchone()
+
+                if (
+                    row is None
+                    or row["ingestion_status"] != "deleted"
+                ):
+                    skipped += 1
+                    continue
+
+                eligible = connection.execute("""
+                    SELECT (
+                        retention_until IS NOT NULL
+                        AND retention_until <= NOW()
+                    ) AS is_eligible
+                    FROM documents
+                    WHERE id = %s
+                """, (
+                    document_id,
+                )).fetchone()
+
+                if not eligible["is_eligible"]:
+                    skipped += 1
+                    continue
+
+                chunks_deleted = connection.execute("""
+                    DELETE FROM document_chunks
+                    WHERE document_id = %s
+                """, (
+                    document_id,
+                )).rowcount
+
+                # Delete only cache vectors no remaining document uses.
+                connection.execute("""
+                    DELETE FROM document_embedding_cache AS cache
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM document_chunks AS chunk
+                        WHERE
+                            chunk.embedding_text_hash =
+                                cache.embedding_text_hash
+                            AND chunk.embedding_model =
+                                cache.embedding_model
+                            AND chunk.embedding_model_version =
+                                cache.embedding_model_version
+                            AND chunk.embedding_dimensions =
+                                cache.embedding_dimensions
+                            AND chunk.embedding_format_version =
+                                cache.embedding_format_version
+                    )
+                """)
+
+                tombstone_hash = hashlib.sha256(
+                    f"purged-document:{document_id}".encode("utf-8")
+                ).hexdigest()
+
+                tombstone_key = f"purged:{document_id}"
+
+                connection.execute("""
+                    UPDATE document_ingestion_events
+                    SET
+                        source_key = %s,
+                        details = (
+                            details
+                            - 'content_sha256'
+                            - 'extracted_text_sha256'
+                            - 'source_path'
+                            - 'file_path'
+                            - 'file_name'
+                            - 'extraction_metadata'
+                        )
+                    WHERE document_id = %s
+                """, (
+                    tombstone_key,
+                    document_id,
+                ))
+
+                connection.execute("""
+                    UPDATE documents
+                    SET
+                        ingestion_status = 'purged',
+                        source_path = '',
+                        source_key = %s,
+                        file_name = '[purged]',
+                        content_sha256 = %s,
+                        extracted_text_sha256 = '',
+                        file_size_bytes = 0,
+                        media_type = 'application/octet-stream',
+                        source_mtime_ns = NULL,
+                        extraction_method = 'purged',
+                        extraction_status = 'purged',
+                        extraction_warnings = '[]'::jsonb,
+                        extraction_metadata = '{}'::jsonb,
+                        source_encoding = NULL,
+                        page_count = NULL,
+                        retention_until = NULL,
+                        purged_at = NOW(),
+                        integrity_status = 'purged',
+                        last_integrity_check_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND ingestion_status = 'deleted'
+                """, (
+                    tombstone_key,
+                    tombstone_hash,
+                    document_id,
+                ))
+
+                connection.execute("""
+                    INSERT INTO document_ingestion_events (
+                        document_id,
+                        source_key,
+                        event_type,
+                        actor,
+                        details
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        'document_purged',
+                        %s,
+                        %s::jsonb
+                    )
+                """, (
+                    document_id,
+                    tombstone_key,
+                    actor,
+                    json.dumps({
+                        "chunks_deleted": int(
+                            chunks_deleted or 0
+                        ),
+                        "content_removed": True,
+                        "audit_tombstone_preserved": True,
+                    }),
+                ))
+
+                purged.append({
+                    "document_id": document_id,
+                    "chunks_deleted": int(
+                        chunks_deleted or 0
+                    ),
+                    "status": "purged",
+                })
+
+        with self.store._connect() as connection:
+            remaining_row = connection.execute("""
+                SELECT COUNT(*) AS remaining_count
+                FROM documents
+                WHERE ingestion_status = 'deleted'
+                  AND retention_until IS NOT NULL
+                  AND retention_until <= NOW()
+            """).fetchone()
+
+            remaining_count = int(
+                remaining_row["remaining_count"]
+            )
+
+        return {
+            "status": (
+                "purged"
+                if purged
+                else "nothing_to_purge"
+            ),
+            "purged_count": len(purged),
+            "skipped_count": skipped,
+            "results": purged,
+            "remaining_expired_documents": remaining_count,
+            "remaining_batch_required": (
+                remaining_count > 0
+            ),
+        }
+
+    def verify_document_integrity(
+        self,
+        document_id: int,
+        *,
+        actor: str = "local_owner",
+    ) -> dict[str, Any]:
+        """
+        Verify stored document chunks against immutable ingestion evidence.
+
+        Checks:
+        - Expected chunk count.
+        - Stable chunk identifiers.
+        - Missing embeddings.
+        - Embedding model provenance.
+        - Embedding dimensions and format.
+        - Embedding input hashes.
+        - Local source-file availability and content hash.
+
+        This does not regenerate embeddings or change document content.
+        """
+
+        document_id = self._validate_document_id(
+            document_id
+        )
+
+        if document_id is None:
+            return {
+                "status": "invalid",
+                "reason": "invalid_document_id",
+            }
+
+        actor = self._normalize_actor(actor)
+
+        self._require_mutation_permission()
+
+        with self.store._connect() as connection:
+
+            identity = connection.execute("""
+                SELECT source_key
+                FROM documents
+                WHERE id = %s
+            """, (
+                document_id,
+            )).fetchone()
+
+            if identity is None:
+                return {
+                    "status": "not_found",
+                    "document_id": document_id,
+                }
+
+            source_key = str(
+                identity["source_key"] or ""
+            )
+
+            self._acquire_document_source_lock(
+                connection,
+                source_key,
+                document_id,
+            )
+
+            document = connection.execute("""
+                SELECT
+                    id,
+                    source_key,
+                    source_path,
+                    file_name,
+                    content_sha256,
+                    source_version,
+                    ingestion_status
+                FROM documents
+                WHERE id = %s
+                FOR UPDATE
+            """, (
+                document_id,
+            )).fetchone()
+
+            if document is None:
+                return {
+                    "status": "not_found",
+                    "document_id": document_id,
+                }
+
+            if document["ingestion_status"] == "purged":
+                return {
+                    "status": "purged",
+                    "document_id": document_id,
+                    "integrity_status": "purged",
+                }
+
+            latest_event = connection.execute("""
+                SELECT details
+                FROM document_ingestion_events
+                WHERE document_id = %s
+                  AND event_type IN (
+                      'document_indexed',
+                      'duplicate_content_indexed'
+                  )
+                ORDER BY id DESC
+                LIMIT 1
+            """, (
+                document_id,
+            )).fetchone()
+
+            details = (
+                latest_event["details"]
+                if latest_event is not None
+                else {}
+            )
+
+            if isinstance(details, str):
+                try:
+                    details = json.loads(details)
+                except json.JSONDecodeError:
+                    details = {}
+
+            if not isinstance(details, dict):
+                details = {}
+
+            chunks = connection.execute("""
+                SELECT
+                    chunk_index,
+                    content,
+                    page_number,
+                    section,
+                    embedding,
+                    embedding_model,
+                    embedding_model_version,
+                    embedding_dimensions,
+                    embedding_format_version,
+                    embedding_text_hash,
+                    metadata
+                FROM document_chunks
+                WHERE document_id = %s
+                ORDER BY chunk_index ASC
+            """, (
+                document_id,
+            )).fetchall()
+
+            issues: list[dict[str, Any]] = []
+            warnings: list[dict[str, Any]] = []
+
+            def add_issue(code: str, **data: Any) -> None:
+                issues.append({
+                    "code": code,
+                    **data,
+                })
+
+            if latest_event is None:
+                add_issue("missing_successful_ingestion_event")
+
+            expected_count = details.get("chunk_count")
+
+            if expected_count is not None:
+                try:
+                    expected_count = int(expected_count)
+                except (TypeError, ValueError):
+                    expected_count = None
+                    add_issue("invalid_expected_chunk_count")
+
+                if (
+                    expected_count is not None
+                    and expected_count != len(chunks)
+                ):
+                    add_issue(
+                        "chunk_count_mismatch",
+                        expected=expected_count,
+                        actual=len(chunks),
+                    )
+
+            expected_model = details.get("embedding_model")
+            expected_version = details.get(
+                "embedding_model_version"
+            )
+            expected_dimensions = details.get(
+                "embedding_dimensions"
+            )
+            expected_format = details.get(
+                "embedding_format_version"
+            )
+
+            if not all((
+                expected_model,
+                expected_version,
+                expected_dimensions,
+                expected_format,
+            )):
+                add_issue(
+                    "missing_embedding_provenance_in_ingestion_event"
+                )
+
+            try:
+                expected_dimensions = (
+                    int(expected_dimensions)
+                    if expected_dimensions is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                expected_dimensions = None
+
+            occurrences: dict[str, int] = {}
+
+            for index, row in enumerate(chunks):
+
+                actual_index = int(row["chunk_index"])
+
+                if actual_index != index:
+                    add_issue(
+                        "chunk_index_sequence_mismatch",
+                        expected=index,
+                        actual=actual_index,
+                    )
+
+                if row["embedding"] is None:
+                    add_issue(
+                        "missing_embedding",
+                        chunk_index=actual_index,
+                    )
+
+                if not str(
+                    row["embedding_text_hash"] or ""
+                ).strip():
+                    add_issue(
+                        "missing_embedding_input_hash",
+                        chunk_index=actual_index,
+                    )
+
+                if (
+                    expected_model
+                    and row["embedding_model"] != expected_model
+                ):
+                    add_issue(
+                        "embedding_model_mismatch",
+                        chunk_index=actual_index,
+                    )
+
+                if (
+                    expected_version
+                    and row["embedding_model_version"]
+                    != expected_version
+                ):
+                    add_issue(
+                        "embedding_version_mismatch",
+                        chunk_index=actual_index,
+                    )
+
+                if (
+                    expected_dimensions is not None
+                    and int(
+                        row["embedding_dimensions"] or 0
+                    ) != expected_dimensions
+                ):
+                    add_issue(
+                        "embedding_dimensions_mismatch",
+                        chunk_index=actual_index,
+                    )
+
+                if (
+                    expected_format
+                    and row["embedding_format_version"]
+                    != expected_format
+                ):
+                    add_issue(
+                        "embedding_format_mismatch",
+                        chunk_index=actual_index,
+                    )
+
+                content = str(row["content"] or "")
+
+                content_hash = hashlib.sha256(
+                    content.encode("utf-8")
+                ).hexdigest()
+
+                identity_base = "\x1f".join((
+                    source_key,
+                    str(row["page_number"] or ""),
+                    str(row["section"] or ""),
+                    content_hash,
+                ))
+
+                occurrence = occurrences.get(
+                    identity_base,
+                    0,
+                )
+
+                occurrences[identity_base] = occurrence + 1
+
+                expected_chunk_id = hashlib.sha256(
+                    (
+                        f"{identity_base}\x1f{occurrence}"
+                    ).encode("utf-8")
+                ).hexdigest()
+
+                metadata = row["metadata"] or {}
+
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except json.JSONDecodeError:
+                        metadata = {}
+
+                chunking = (
+                    metadata.get("chunking", {})
+                    if isinstance(metadata, dict)
+                    else {}
+                )
+
+                actual_chunk_id = (
+                    chunking.get("stable_chunk_id")
+                    if isinstance(chunking, dict)
+                    else None
+                )
+
+                if actual_chunk_id != expected_chunk_id:
+                    add_issue(
+                        "stable_chunk_id_mismatch",
+                        chunk_index=actual_index,
+                    )
+
+            # The source file is an external copy of the indexed snapshot.
+            # Its absence is a warning, not proof of corrupted database data.
+            source_path = str(
+                document["source_path"] or ""
+            )
+
+            source_state = "not_available"
+
+            if source_path:
+
+                path = Path(source_path)
+
+                try:
+                    if path.is_file():
+                        stat = path.stat()
+
+                        if stat.st_size > MAX_FILE_BYTES:
+                            source_state = "size_limit_exceeded"
+                        else:
+                            current_hash = hashlib.sha256(
+                                path.read_bytes()
+                            ).hexdigest()
+
+                            source_state = (
+                                "unchanged"
+                                if current_hash
+                                == document["content_sha256"]
+                                else "changed"
+                            )
+
+                    else:
+                        source_state = "missing"
+
+                except OSError:
+                    source_state = "unreadable"
+
+            if source_state == "changed":
+                warnings.append({
+                    "code": "source_file_changed_since_ingestion",
+                })
+
+            elif source_state in {
+                "missing",
+                "unreadable",
+                "size_limit_exceeded",
+            }:
+                warnings.append({
+                    "code": "source_file_unavailable",
+                    "reason": source_state,
+                })
+
+            status = (
+                "degraded"
+                if issues
+                else "healthy"
+            )
+
+            connection.execute("""
+                UPDATE documents
+                SET
+                    integrity_status = %s,
+                    last_integrity_check_at = NOW()
+                WHERE id = %s
+            """, (
+                status,
+                document_id,
+            ))
+
+            connection.execute("""
+                INSERT INTO document_ingestion_events (
+                    document_id,
+                    source_key,
+                    event_type,
+                    actor,
+                    details
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'document_integrity_checked',
+                    %s,
+                    %s::jsonb
+                )
+            """, (
+                document_id,
+                source_key,
+                actor,
+                json.dumps({
+                    "integrity_status": status,
+                    "chunk_count": len(chunks),
+                    "issue_codes": [
+                        item["code"]
+                        for item in issues
+                    ],
+                    "warning_codes": [
+                        item["code"]
+                        for item in warnings
+                    ],
+                    "source_state": source_state,
+                }),
+            ))
+
+        return {
+            "status": status,
+            "document_id": document_id,
+            "source_version": int(
+                document["source_version"]
+            ),
+            "ingestion_status": document["ingestion_status"],
+            "expected_chunks": expected_count,
+            "actual_chunks": len(chunks),
+            "issues": issues,
+            "warnings": warnings,
+            "source_state": source_state,
+            "checked_at": "recorded_in_database",
+        }
+
+    def reindex_document(
+        self,
+        document_id: int,
+        *,
+        actor: str = "local_owner",
+    ) -> dict[str, Any]:
+        """
+        Rebuild an unhealthy active document index from its original file.
+
+        The original source file must still match the indexed binary hash.
+        A rebuild creates a new immutable document version when necessary.
+        """
+
+        document_id = self._validate_document_id(
+            document_id
+        )
+
+        if document_id is None:
+            return {
+                "status": "invalid",
+                "reason": "invalid_document_id",
+            }
+
+        actor = self._normalize_actor(actor)
+        self._require_mutation_permission()
+
+        with self.store._connect() as connection:
+            document = connection.execute("""
+                SELECT
+                    id,
+                    source_path,
+                    file_name,
+                    content_sha256,
+                    category,
+                    language,
+                    ingestion_status,
+                    source_version
+                FROM documents
+                WHERE id = %s
+            """, (
+                document_id,
+            )).fetchone()
+
+        if document is None:
+            return {
+                "status": "not_found",
+                "document_id": document_id,
+            }
+
+        if document["ingestion_status"] != "ready":
+            return {
+                "status": "blocked",
+                "reason": "only_active_documents_can_be_reindexed",
+                "document_id": document_id,
+            }
+
+        source_path = str(
+            document["source_path"] or ""
+        )
+
+        if not source_path:
+            return {
+                "status": "blocked",
+                "reason": "original_source_path_missing",
+                "document_id": document_id,
+            }
+
+        path = Path(source_path)
+
+        if not path.is_file():
+            return {
+                "status": "blocked",
+                "reason": "original_source_unavailable",
+                "document_id": document_id,
+            }
+
+        try:
+            stat = path.stat()
+
+            if stat.st_size > MAX_FILE_BYTES:
+                return {
+                    "status": "blocked",
+                    "reason": "source_file_exceeds_size_limit",
+                    "document_id": document_id,
+                }
+
+            current_hash = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+
+        except OSError:
+            return {
+                "status": "blocked",
+                "reason": "original_source_unreadable",
+                "document_id": document_id,
+            }
+
+        if current_hash != document["content_sha256"]:
+            return {
+                "status": "blocked",
+                "reason": "source_changed_reingestion_required",
+                "document_id": document_id,
+                "instruction": (
+                    "The original source has changed. "
+                    "Use normal ingestion to create a new version."
+                ),
+            }
+
+        # Audit before attempting recovery.
+        integrity = self.verify_document_integrity(
+            document_id,
+            actor=actor,
+        )
+
+        if integrity.get("status") == "healthy":
+            return {
+                "status": "already_healthy",
+                "document_id": document_id,
+                "integrity": integrity,
+            }
+
+        # Reuse the existing safe ingestion pipeline.
+        # It reuses matching cached embeddings and creates an
+        # immutable version instead of destructively overwriting
+        # the old document.
+        result = self.ingest_file(
+            path,
+            category=str(document["category"] or "general"),
+            language=str(document["language"] or "unknown"),
+            force=False,
+        )
+
+        if result.get("status") == "already_indexed":
+            return {
+                "status": "recovery_not_confirmed",
+                "reason": "ingestion_returned_existing_index",
+                "document_id": document_id,
+                "integrity": integrity,
+            }
+
+        new_document_id = int(
+            result["document_id"]
+        )
+
+        if new_document_id != document_id:
+
+            with self.store._connect() as connection:
+
+                new_identity = connection.execute("""
+                    SELECT source_key
+                    FROM documents
+                    WHERE id = %s
+                """, (
+                    new_document_id,
+                )).fetchone()
+
+                connection.execute("""
+                    INSERT INTO document_ingestion_events (
+                        document_id,
+                        previous_document_id,
+                        source_key,
+                        event_type,
+                        actor,
+                        details
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        'document_reindexed',
+                        %s,
+                        %s::jsonb
+                    )
+                """, (
+                    new_document_id,
+                    document_id,
+                    str(
+                        new_identity["source_key"] or ""
+                    ) if new_identity else "",
+                    actor,
+                    json.dumps({
+                        "previous_version": int(
+                            document["source_version"]
+                        ),
+                        "recovery_status": result.get("status"),
+                    }),
+                ))
+
+        return {
+            "status": "reindexed",
+            "previous_document_id": document_id,
+            "new_document_id": new_document_id,
+            "ingestion_result": result,
+        }
